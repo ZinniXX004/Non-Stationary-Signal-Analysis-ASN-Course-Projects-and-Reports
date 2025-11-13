@@ -1,14 +1,9 @@
 """
-Segmentation_ECG_to_PCG.py (patched)
-
 Segment PCG using ECG R-peak indices.
 
-Updated:
  - segment_one_cycle: added optional parameters pre_ms/post_ms, enforce_single_cycle,
    allow_partial_edges to avoid capturing adjacent cycles.
  - choose_clean_beat: improved heuristic (envelope-based SNR-like) to pick a "clean" beat index.
-
-Compatibility:
  - Returns & main signatures unchanged; old calls without new params behave as before.
 """
 

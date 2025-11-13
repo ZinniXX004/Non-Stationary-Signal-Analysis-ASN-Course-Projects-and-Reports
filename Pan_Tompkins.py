@@ -1,17 +1,9 @@
-# Pan_Tompkins.py (patched: amplitude stabilization added)
 """
 Pan_Tompkins.py
 
 NumPy-only version of the Pan-Tompkins style QRS detector.
 Replaces SciPy dependencies (butter, filtfilt, find_peaks) with
 pure-NumPy equivalents where needed.
-
-Changes in this patched version:
- - Adds amplitude stabilization (_amplitude_stabilize) to suppress
-   extreme transients / abnormal amplitude sections that corrupt
-   adaptive thresholds. This is applied before filtering in both
-   detect_r_peaks(...) and pt_pipeline(...).
- - API, function names, parameters, and return values preserved.
 """
 from typing import Optional
 import numpy as np

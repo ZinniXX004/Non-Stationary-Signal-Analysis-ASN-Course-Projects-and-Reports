@@ -1,4 +1,5 @@
-"""Start the GUI app."""
+#Start the GUI app
+
 import sys
 from PyQt6 import QtWidgets
 from GUI import PCGAnalyzerGUI

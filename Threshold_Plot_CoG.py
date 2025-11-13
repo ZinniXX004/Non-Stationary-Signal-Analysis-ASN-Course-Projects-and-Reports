@@ -1,6 +1,5 @@
-# Threshold_Plot_CoG.py
 """
-Threshold_Plot_CoG.py (numpy-only)
+Threshold_Plot_CoG.py (numpy)
 - Implements threshold_mask and compute_cog without scipy.ndimage.
 - Uses simple connected-component labeling (8-connectivity) via flood-fill.
 - API compatible with previous version.
