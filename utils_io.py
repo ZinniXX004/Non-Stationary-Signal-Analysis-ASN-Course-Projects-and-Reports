@@ -25,9 +25,8 @@ def _count_sharp_peaks(x, fs):
 
 def auto_detect_channels(p_signal: np.ndarray, fs: int = 2000) -> Dict[str,int]:
     """
-    Heuristic to detect ECG vs PCG channel indices:
-      - ECG has stronger bandpower in 5-40 Hz and more sharp peaks in derivative envelope.
-      - PCG tends to have more energy above 50 Hz (but this depends).
+      - ECG has stronger bandpower in 5-40 Hz and more sharp peaks in derivative envelope
+      - PCG tends to have more energy above 50 Hz (but this depends)
     Returns {'ecg': idx, 'pcg': idx}
     """
     nch = p_signal.shape[1]
@@ -51,7 +50,6 @@ def auto_detect_channels(p_signal: np.ndarray, fs: int = 2000) -> Dict[str,int]:
 
 def try_load_record(fname_or_base: str) -> Dict[str, Any]:
     """
-    Attempt to load WFDB record or raw .dat.
     Returns dict: {'p_signal': ndarray, 'fs': int, 'sig_name': list, 'channel_map': {'ecg':i,'pcg':j}}
     """
     try:

@@ -1,15 +1,11 @@
 """
-Pan_Tompkins.py
-
-NumPy-only version of the Pan-Tompkins style QRS detector.
-Replaces SciPy dependencies (butter, filtfilt, find_peaks) with
-pure-NumPy equivalents where needed.
+NumPy-only version of the Pan-Tompkins style QRS detector
 """
 from typing import Optional
 import numpy as np
 import matplotlib.pyplot as plt
 
-# ---------------- filtering / preprocessing helpers ----------------
+# filtering / preprocessing helpers 
 def _design_bandpass_fir(fs: int, low: float, high: float, kernel_len: Optional[int] = None) -> np.ndarray:
     if kernel_len is None:
         kernel_len = int(round(min(1025, max(31, 0.128 * fs))))
@@ -106,7 +102,7 @@ def _find_peaks_numpy(x: np.ndarray, height: Optional[float] = None, distance: O
     kept.sort()
     return kept.astype(int)
 
-# ---------------- robust normalize / fallback ----------------
+# robust normalize / fallback
 def _robust_normalize(x):
     x = np.asarray(x).astype(float)
     med = np.median(x)
@@ -130,7 +126,7 @@ def _fallback_qrs_detector(ecg, fs):
     peaks = _find_peaks_numpy(env, height=thresh, distance=distance)
     return peaks
 
-# ---------------- amplitude stabilization ----------------
+# amplitude stabilization
 def _amplitude_stabilize(ecg: np.ndarray, fs: int, env_win_ms: float = 200.0,
                          max_ratio_thresh: float = 8.0,
                          gain_clip: tuple = (0.3, 3.0)) -> (np.ndarray, bool):
@@ -138,9 +134,9 @@ def _amplitude_stabilize(ecg: np.ndarray, fs: int, env_win_ms: float = 200.0,
     Adaptive amplitude stabilization:
      - compute envelope E = moving average(|ecg|, env_win_ms)
      - if max(E)/median(E) > max_ratio_thresh -> compute gain = median(E) / (E + eps)
-       and clip gain into gain_clip range to avoid extreme distortion.
+       and clip gain into gain_clip range to avoid extreme distortion
      - return (ecg * gain, changed_flag)
-    If no severe transient, returns original ecg and False.
+    If no severe transient, returns original ecg and False
     """
     ecg = np.asarray(ecg, dtype=float)
     win = max(1, int(round(env_win_ms / 1000.0 * fs)))
@@ -160,7 +156,7 @@ def _amplitude_stabilize(ecg: np.ndarray, fs: int, env_win_ms: float = 200.0,
     ecg_stab = ecg * gain
     return ecg_stab, True
 
-# ---------------- main detector ----------------
+# main detector
 def detect_r_peaks_with_fallback(ecg, fs=2000, debug=False):
     ecg_norm = _robust_normalize(ecg)
     try:
@@ -192,17 +188,13 @@ def detect_r_peaks(ecg: np.ndarray,
                    refractory_ms: float = 200.0,
                    search_back_factor: float = 1.66,
                    debug: bool = False) -> np.ndarray:
-    """
-    Pan-Tompkins style QRS detector implemented using NumPy-only primitives.
-    This version applies amplitude stabilization first to prevent early transients
-    from dominating the adaptive thresholds.
-    """
+    
     ecg = np.asarray(ecg).ravel()
     N = ecg.size
     if N == 0:
         return np.array([], dtype=int)
 
-    # --- amplitude stabilization: suppress large early transients if present ---
+    # amplitude stabilization: suppress large early transients if present
     try:
         ecg_proc, changed = _amplitude_stabilize(ecg, fs, env_win_ms=200.0, max_ratio_thresh=8.0, gain_clip=(0.3, 3.0))
         if changed and debug:
@@ -378,14 +370,14 @@ def detect_r_peaks(ecg: np.ndarray,
         print(f"[Pan-Tompkins] final detected beats: {len(detected)}")
     return detected
 
-# ---------------- pipeline / plotting (kept compatibility) ----------------
+# pipeline / plotting (kept compatibility)
 def pt_pipeline(ecg: np.ndarray, fs: int = 2000, low_hz: float = 5.0, high_hz: float = 15.0, integration_ms: float = 150.0):
     """
     Return intermediate arrays used by Pan-Tompkins:
       {
         'ecg_raw', 'ecg_filtered', 'deriv', 'squared', 'mwi', 'cand_idxs'
       }
-    Applies amplitude stabilization so plotted pipeline matches detector input.
+    Applies amplitude stabilization so plotted pipeline matches detector input
     """
     ecg = np.asarray(ecg).ravel()
     try:

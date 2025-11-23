@@ -1,10 +1,9 @@
 """
 Segment PCG using ECG R-peak indices.
-
  - segment_one_cycle: added optional parameters pre_ms/post_ms, enforce_single_cycle,
-   allow_partial_edges to avoid capturing adjacent cycles.
- - choose_clean_beat: improved heuristic (envelope-based SNR-like) to pick a "clean" beat index.
- - Returns & main signatures unchanged; old calls without new params behave as before.
+   allow_partial_edges to avoid capturing adjacent cycles
+ - choose_clean_beat: improved heuristic (envelope-based SNR-like) to pick a "clean" beat index
+ - Returns & main signatures unchanged; old calls without new params behave as before
 """
 
 from typing import Tuple, Optional
@@ -21,19 +20,15 @@ def segment_one_cycle(pcg: np.ndarray,
                       enforce_single_cycle: bool = True,
                       allow_partial_edges: bool = True) -> Tuple[np.ndarray, int, int]:
     """
-    Extract a single PCG segment corresponding to the RR interval r_peaks[idx] -> r_peaks[idx+1].
-
-    Behaviour (defaults preserve previous behavior):
-      - By default a symmetric padding `pad_ms` (ms) is applied before the first R and after the next R.
-      - If `pre_ms` or `post_ms` provided, they override the respective side padding.
+    Extract a single PCG segment corresponding to the RR interval r_peaks[idx] -> r_peaks[idx+1]
+      - By default a symmetric padding `pad_ms` (ms) is applied before the first R and after the next R
+      - If `pre_ms` or `post_ms` provided, they override the respective side padding
       - If `enforce_single_cycle` is True (default), the computed start/end are clipped to the midpoints
-        between adjacent R-peaks so the returned window does NOT cross into adjacent cycles.
+        between adjacent R-peaks so the returned window does NOT cross into adjacent cycles
       - If the requested index is near the file edges and `allow_partial_edges` is False, an IndexError
-        is raised. If True (default), clipping to 0/len(pcg) is used as necessary.
-
+        is raised. If True (default), clipping to 0/len(pcg) is used as necessary
     Returns:
         (segment_array, start_sample, end_sample)
-
     Raises:
         IndexError if idx out of range (same as before) or if neighboring midpoints are required but not allowed.
     """
@@ -70,7 +65,7 @@ def segment_one_cycle(pcg: np.ndarray,
             next_mid = len(pcg)
 
         # If user asked to disallow using partial edges and a midpoint is missing near the requested interval,
-        # raise an error for clarity; otherwise we clamp to 0/len(pcg).
+        # raise an error for clarity; otherwise clamp to 0/len(pcg).
         if not allow_partial_edges:
             if idx == 0 and prev_mid == 0 and (r_peaks[idx] - pre_samp) < 0:
                 raise IndexError("Left-side midpoint unavailable and allow_partial_edges=False")
@@ -103,26 +98,22 @@ def choose_clean_beat(pcg: np.ndarray,
                       envelope_win_ms: float = 50.0,
                       search_pad_ms: float = 30.0) -> int:
     """
-    Heuristic to select a 'clean' beat index.
-
     Parameters:
         pcg: 1D PCG signal array.
-        r_peaks: array of R-peak sample indices (must contain at least two).
-        fs: sampling frequency (Hz).
-        method: currently only 'envelope_ratio' supported (higher is better).
-        envelope_win_ms: smoothing window (ms) for envelope used in SNR-like measure.
+        r_peaks: array of R-peak sample indices (must contain at least two)
+        fs: sampling frequency (Hz)
+        method: currently only 'envelope_ratio' supported (higher is better)
+        envelope_win_ms: smoothing window (ms) for envelope used in SNR-like measure
         search_pad_ms: when measuring per-beat envelope, how much extra padding (ms) around RR interval
-                       to include in the metric.
-
+                       to include in the metric
     Returns:
-        index (int) of chosen beat (0-based index into r_peaks for start of RR).
-        If no valid beats found, returns 0 (backwards-compatible default).
-
+        index (int) of chosen beat (0-based index into r_peaks for start of RR)
+        If no valid beats found, returns 0 (backwards-compatible default)
     Behavior:
         'envelope_ratio' computes, for each RR interval, an envelope E (smoothed abs(PCG)) and then computes
-        score = max(E_segment) / (median(E_segment) + eps). The beat with largest score is returned.
+        score = max(E_segment) / (median(E_segment) + eps). The beat with largest score is returned
         This is a simple SNR-like heuristic that tends to prefer beats with distinct S1/S2 components
-        and low baseline noise.
+        and low baseline noise
     """
     if r_peaks is None or len(r_peaks) < 2:
         return 0
@@ -140,8 +131,8 @@ def choose_clean_beat(pcg: np.ndarray,
 
     scores = []
     for i in range(len(r_peaks) - 1):
-        # obtain candidate segment bounds, but do not apply midpoint clipping here;
-        # we only want a local window around the RR interval for scoring.
+        # obtain candidate segment bounds, but do not apply midpoint clipping here
+        # only want a local window around the RR interval for scoring
         start = max(0, r_peaks[i] - pad_s)
         end = min(len(pcg), r_peaks[i + 1] + pad_s)
         if end <= start:

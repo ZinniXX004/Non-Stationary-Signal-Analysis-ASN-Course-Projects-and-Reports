@@ -1,8 +1,8 @@
 """
 Threshold_Plot_CoG.py (numpy)
-- Implements threshold_mask and compute_cog without scipy.ndimage.
-- Uses simple connected-component labeling (8-connectivity) via flood-fill.
-- API compatible with previous version.
+- Implements threshold_mask and compute_cog without scipy.ndimage
+- Uses simple connected-component labeling (8-connectivity) via flood-fill
+- API compatible with previous version
 """
 import numpy as np
 
@@ -27,7 +27,7 @@ def _ensure_mask_shape(mask, target_shape):
         pass
     return np.zeros(target_shape, dtype=bool)
 
-# -------------- connected-component labeling (8-connectivity) --------------
+# connected-component labeling (8-connectivity)
 def _label_components(bin_mask):
     """
     Label connected components in 2D boolean array using 8-connectivity.
