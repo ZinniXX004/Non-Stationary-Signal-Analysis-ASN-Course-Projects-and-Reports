@@ -4,10 +4,12 @@ from mpl_toolkits.mplot3d import Axes3D
 
 class ManualCWT:
     """
-    Implementasi Continuous Wavelet Transform (CWT) Manual.
-    Mendukung dua jenis Mother Wavelet:
-    1. Morlet (Analitik)
-    2. Daubechies 4 (Pendekatan Numerik via Cascade Algorithm)
+    Manual Implementation of Continuous Wavelet Transform (CWT).
+    
+    Features:
+    1. Supports 'Morlet' (Analytical) and 'db4' (Numerical Approximation) wavelets.
+    2. Uses direct convolution (time-domain) instead of FFT-based convolution.
+    3. Fully manual generation of wavelet shapes without 'pywt'.
     """
     def __init__(self, fs, f_min=20, f_max=450, num_scales=64, wavelet_type='morlet'):
         self.fs = fs
@@ -16,144 +18,185 @@ class ManualCWT:
         self.num_scales = num_scales
         self.wavelet_type = wavelet_type.lower()
         
-        # Generate scales berdasarkan frekuensi target
-        # Rumus: Scale = (Center_Freq * Fs) / Target_Freq
+        # 1. Determine Center Frequency (fc)
+        # fc is the normalized center frequency of the mother wavelet.
+        # Values are approximations based on standard literature.
         if self.wavelet_type == 'morlet':
-            self.fc = 0.8125  # Center freq standar Morlet
+            self.fc = 0.8125  # Standard center freq for Morlet (w0=6)
         else: # db4
-            self.fc = 0.7143  # Center freq aproksimasi db4
+            self.fc = 0.7143  # Approximate center freq for db4
             
-        # Buat array frekuensi secara logaritmik agar resolusi bagus di frekuensi rendah
+        # 2. Generate Scales from Frequencies
+        # We use logarithmic spacing for frequencies to capture low-freq details better.
+        # Formula: Scale (a) = (fc * fs) / f
         self.freqs = np.logspace(np.log10(f_min), np.log10(f_max), num_scales)
         self.scales = (self.fc * fs) / self.freqs
         
-        # Cache untuk bentuk dasar db4 (agar tidak hitung ulang terus)
+        # 3. Pre-compute db4 prototype if needed (to save computation time)
         self.db4_prototype = None
         if self.wavelet_type == 'db4':
             self.db4_prototype = self._generate_db4_prototype()
 
     def _morlet_wavelet(self, scale):
         """
-        Membuat Complex Morlet Wavelet pada skala tertentu.
-        Rumus: psi(t) = pi^(-0.25) * exp(i*w*t) * exp(-t^2/2)
+        Generates the Complex Morlet Wavelet for a specific scale.
+        
+        Analytical Formula:
+        psi(t) = C * exp(i * w0 * t) * exp(-t^2 / 2)
+        
+        Where:
+        C  = pi^(-0.25) (Normalization constant)
+        w0 = 6 (Wavenumber, standard for CWT to satisfy admissibility condition)
         """
-        # Tentukan rentang waktu efektif (-6 sigma s.d +6 sigma)
+        # Define effective time support [-5 sigma, +5 sigma]
+        # The wavelet is scaled by dividing t by 'scale'.
         M = int(scale * 10) 
-        if M % 2 == 0: M += 1 # Ganjilkan
+        if M % 2 == 0: M += 1 # Ensure odd length for symmetry
+        
         t = np.arange(-(M//2), (M//2)+1) / scale
         
-        # Konstanta Normalisasi
+        # Normalization Constant
         C = np.pi**(-0.25)
         
-        # Complex Morlet (w0 = 6 biasanya)
+        # Wavenumber
         w0 = 6 
+        
+        # Calculate Wavelet
         psi = C * np.exp(1j * w0 * t) * np.exp(-0.5 * t**2)
         
-        # Normalisasi energi agar 1/sqrt(a) terpenuhi
+        # Energy Normalization: 1 / sqrt(scale)
+        # Ensures the energy of the wavelet remains constant across scales
         return psi * (1 / np.sqrt(scale))
 
     def _generate_db4_prototype(self, iterations=6):
         """
-        Membangkitkan bentuk gelombang db4 menggunakan Cascade Algorithm.
+        Generates the Daubechies 4 (db4) wavelet shape using the Cascade Algorithm.
+        Since db4 has no closed-form equation, we iteratively upscale and convolve
+        the filter coefficients to approximate the continuous function.
         """
-        # Koefisien Rekonstruksi (Inverse Filter) untuk db4
+        # Daubechies 4 Decomposition Coefficients (derived analytically)
         h0 = (1 + np.sqrt(3)) / (4 * np.sqrt(2))
         h1 = (3 + np.sqrt(3)) / (4 * np.sqrt(2))
         h2 = (3 - np.sqrt(3)) / (4 * np.sqrt(2))
         h3 = (1 - np.sqrt(3)) / (4 * np.sqrt(2))
         
-        # Low Pass Reconstruction (Scaling Filter)
+        # Reconstruction Low Pass Filter (Scaling Filter)
         L_R = np.array([h3, h2, h1, h0, h0, h1, h2, h3]) 
-        # High Pass Reconstruction (Wavelet Filter)
+        
+        # Reconstruction High Pass Filter (Wavelet Filter)
+        # Alternating signs for Quadrature Mirror Filter
         H_R = np.array([h3, -h2, h1, -h0, h0, -h1, h2, -h3]) 
         
-        # Algoritma Kaskade (Iterative Upsampling + Convolution)
+        # Cascade Algorithm (Iterative Upsampling + Convolution)
+        # Start with the high-pass filter (Wavelet branch)
         psi = H_R 
         
         for _ in range(iterations):
-            # 1. Upsample (sisipkan nol)
+            # 1. Upsample (Insert zeros between samples)
             psi_up = np.zeros(len(psi) * 2)
             psi_up[::2] = psi
             
-            # 2. Konvolusi dengan Scaling Filter (Low Pass)
+            # 2. Convolve with Scaling Filter
+            # This smooths the discrete steps
             psi = np.convolve(psi_up, L_R)
             
         return psi
 
     def _db4_wavelet(self, scale):
         """
-        Membuat db4 wavelet pada skala tertentu dengan cara Resampling (Interpolasi).
+        Generates the db4 wavelet for a specific scale by Resampling (Interpolation).
         """
         prototype = self.db4_prototype
         len_proto = len(prototype)
         
-        # Target panjang window berdasarkan skala
+        # Determine target length based on scale
+        # db4 effective width is approx 7. Effective length ~ scale * 7
         target_len = int(scale * 7)
-        if target_len < 8: target_len = 8 # Minimal length
+        if target_len < 8: target_len = 8 # Minimum length constraint
         
-        # Interpolasi Linear Manual (Resampling)
+        # Manual Linear Interpolation (Resampling)
         x_original = np.linspace(0, 1, len_proto)
         x_target = np.linspace(0, 1, target_len)
         
         psi_resampled = np.interp(x_target, x_original, prototype)
         
-        # Normalisasi Energi
+        # Energy Normalization: 1 / sqrt(scale)
         return psi_resampled * (1 / np.sqrt(scale))
 
     def compute(self, signal):
         """
-        Menghitung Koefisien CWT dan Scalogram.
+        Computes CWT Coefficients and Energy Density.
+        
+        Method:
+        Direct convolution of the signal with the scaled wavelet for each scale.
+        
         Returns:
-            time: array waktu
-            freqs: array frekuensi
-            scalogram: Matriks Energi (Frekuensi x Waktu)
+            energy_density: |CWT|^2 (Matrix: Scales x Time)
+            freqs: Frequency axis corresponding to scales
         """
         n = len(signal)
+        # Initialize complex matrix for coefficients
         cwt_matrix = np.zeros((self.num_scales, n), dtype=complex)
         
-        # Loop untuk setiap skala (frekuensi)
+        # Iterate through each scale (frequency band)
         for i, scale in enumerate(self.scales):
-            # 1. Generate Mother Wavelet pada skala ini
+            # 1. Generate Mother Wavelet at current scale
             if self.wavelet_type == 'morlet':
                 psi = self._morlet_wavelet(scale)
             else:
                 psi = self._db4_wavelet(scale)
             
-            # 2. Konvolusi (Sinyal * Wavelet)
-            # mode='same' agar panjang output sama dengan input
+            # 2. Perform Convolution (Signal * Wavelet)
+            # mode='same' ensures output length matches input length
+            # This represents the inner product <signal, wavelet> at every time shift
             coeffs = np.convolve(signal, psi, mode='same')
             
             cwt_matrix[i, :] = coeffs
             
-        # Hitung Scalogram (Densitas Energi)
+        # Calculate Scalogram (Energy Density)
+        # Formula: E = |W(a, b)|^2
         energy_density = np.abs(cwt_matrix)**2
         
         return energy_density, self.freqs
 
 def compute_cwt_for_segments(segments, wavelet_type='morlet'):
-    """Wrapper untuk list segments."""
+    """
+    Wrapper function to process a list of EMG segments.
+    """
     if not segments: return []
     
-    # Ambil Fs dari data pertama
+    # Get sampling frequency
     fs = segments[0]['fs']
     
+    # Initialize Manual CWT Solver
     cwt_solver = ManualCWT(fs, f_min=20, f_max=450, num_scales=50, wavelet_type=wavelet_type)
     
-    print(f"[-] Menghitung CWT Manual (Wavelet: {wavelet_type}, Scales: 50)...")
+    print(f"[-] Computing Manual CWT (Wavelet: {wavelet_type}, Scales: 50)...")
     
     processed_segments = []
     for seg in segments:
         new_seg = seg.copy()
         
-        # Prioritas Sinyal: Denoised -> Filtered -> Raw
-        gl_sig = seg.get('gl_denoised', seg.get('gl_filtered', seg['gl_segment']))
-        vl_sig = seg.get('vl_denoised', seg.get('vl_filtered', seg['vl_segment']))
+        # Select best available signal: Denoised > Filtered > Raw
+        if 'gl_denoised' in seg:
+            gl_sig = seg['gl_denoised']
+        elif 'gl_filtered' in seg:
+            gl_sig = seg['gl_filtered']
+        else:
+            gl_sig = seg['gl_segment']
+
+        if 'vl_denoised' in seg:
+            vl_sig = seg['vl_denoised']
+        elif 'vl_filtered' in seg:
+            vl_sig = seg['vl_filtered']
+        else:
+            vl_sig = seg['vl_segment']
         
-        # Hitung CWT GL
+        # Compute CWT for Gastrocnemius (GL)
         E_gl, f_gl = cwt_solver.compute(gl_sig)
         new_seg['cwt_gl'] = {'f': f_gl, 't': seg['time'], 'E': E_gl, 'type': wavelet_type}
         
-        # Hitung CWT VL
+        # Compute CWT for Vastus Lateralis (VL)
         E_vl, f_vl = cwt_solver.compute(vl_sig)
         new_seg['cwt_vl'] = {'f': f_vl, 't': seg['time'], 'E': E_vl, 'type': wavelet_type}
         
@@ -163,8 +206,8 @@ def compute_cwt_for_segments(segments, wavelet_type='morlet'):
 
 def plot_cwt(segments, cycle_idx=0, muscle='GL', use_db=False, mode='2D'):
     """
-    Visualisasi CWT Scalogram.
-    Modifikasi: Sumbu X menggunakan % Gait Cycle (0-100).
+    Visualization Function for CWT Scalogram.
+    X-Axis is normalized to % Gait Cycle (0-100%).
     """
     if not segments: return
     
@@ -172,7 +215,7 @@ def plot_cwt(segments, cycle_idx=0, muscle='GL', use_db=False, mode='2D'):
     key = 'cwt_gl' if muscle == 'GL' else 'cwt_vl'
     
     if key not in seg:
-        print("Data CWT belum dihitung.")
+        print("CWT data not found.")
         return
 
     data = seg[key]
@@ -180,17 +223,17 @@ def plot_cwt(segments, cycle_idx=0, muscle='GL', use_db=False, mode='2D'):
     t = data['t']
     E = data['E'] # Energy Density |W|^2
     
-    # --- MODIFIKASI UTAMA: Normalisasi Waktu ke % Gait Cycle ---
-    # Normalisasi t agar 0% = awal siklus, 100% = akhir siklus
+    # --- NORMALIZE TIME TO % GAIT CYCLE ---
+    # Map t[start] to 0% and t[end] to 100%
     if len(t) > 1:
         t_norm = (t - t[0]) / (t[-1] - t[0]) * 100
     else:
         t_norm = t
     
-    # Konversi Unit
+    # Unit Conversion
     if use_db:
-        # 10 log10 karena E sudah berupa Power (|W|^2)
-        # Tambahkan epsilon untuk menghindari log(0)
+        # Convert to decibels: 10 * log10(Power)
+        # Add epsilon to avoid log(0) error
         Z_plot = 10 * np.log10(E + 1e-10)
         unit_label = "Power Spectral Density (dB)"
     else:
@@ -201,21 +244,20 @@ def plot_cwt(segments, cycle_idx=0, muscle='GL', use_db=False, mode='2D'):
     
     if mode == '2D':
         ax = fig.add_subplot(111)
-        # Contourf untuk hasil CWT
+        # Use contourf for smooth energy representation
         levels = 50
         cf = ax.contourf(t_norm, f, Z_plot, levels=levels, cmap='jet')
         cbar = fig.colorbar(cf, ax=ax, label=unit_label)
         
         ax.set_ylabel('Frequency (Hz)')
-        ax.set_xlabel('% Gait Cycle') # Updated Label
+        ax.set_xlabel('% Gait Cycle') 
         ax.set_title(f"CWT Scalogram ({data['type']}) - {muscle} Cycle {seg['cycle_id']}")
-        ax.set_xlim(0, 100) # Pastikan limit 0-100%
+        ax.set_xlim(0, 100)
         
     elif mode == '3D':
         ax = fig.add_subplot(111, projection='3d')
         
-        # Meshgrid diperlukan untuk plot 3D
-        # Gunakan t_norm untuk sumbu X
+        # Create meshgrid for 3D plotting
         T_grid, F_grid = np.meshgrid(t_norm, f)
         
         # Surface plot
@@ -224,41 +266,44 @@ def plot_cwt(segments, cycle_idx=0, muscle='GL', use_db=False, mode='2D'):
         
         fig.colorbar(surf, ax=ax, label=unit_label, pad=0.1)
         
-        ax.set_xlabel('% Gait Cycle') # Updated Label
+        ax.set_xlabel('% Gait Cycle') 
         ax.set_ylabel('Frequency (Hz)')
         ax.set_zlabel(unit_label)
         ax.set_title(f"CWT 3D Surface ({data['type']}) - {muscle} Cycle {seg['cycle_id']}")
-        ax.set_xlim(0, 100) # Pastikan limit 0-100%
+        ax.set_xlim(0, 100)
         
+        # Initial Camera View
         ax.view_init(elev=40, azim=-45)
 
     plt.tight_layout()
     plt.show()
 
-# --- Blok Testing Mandiri ---
+# --- Standalone Testing Block ---
 if __name__ == "__main__":
-    # Buat sinyal dummy Burst (Aktivasi Otot simulasi)
+    # Generate Dummy Burst Signal (Simulating Muscle Activation)
     fs_test = 2000
     t = np.linspace(0, 1, fs_test)
-    # Sinyal burst di tengah (0.4s - 0.6s) frekuensi 150Hz
+    # Burst in the middle (0.4s - 0.6s) at 150Hz
     sig = np.zeros_like(t)
     mask = (t > 0.4) & (t < 0.6)
     sig[mask] = np.sin(2 * np.pi * 150 * t[mask]) * np.hanning(sum(mask))
     
+    # Create dummy segment structure
     dummy_segs = [{
         'cycle_id': 1,
         'fs': fs_test,
         'time': t,
-        'gl_denoised': sig,
-        'vl_denoised': sig
+        'gl_segment': sig, 'vl_segment': sig,
+        'gl_filtered': sig, 'vl_filtered': sig,
+        'gl_denoised': sig, 'vl_denoised': sig
     }]
     
     # 1. Test Morlet
-    print("Testing Morlet...")
+    print("Testing Morlet Wavelet...")
     res_morlet = compute_cwt_for_segments(dummy_segs, wavelet_type='morlet')
     plot_cwt(res_morlet, mode='2D', use_db=True)
     
     # 2. Test db4 (Approximation)
-    print("Testing db4 (Numerical)...")
+    print("Testing db4 Wavelet (Numerical)...")
     res_db4 = compute_cwt_for_segments(dummy_segs, wavelet_type='db4')
     plot_cwt(res_db4, mode='3D', use_db=False)

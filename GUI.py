@@ -205,9 +205,9 @@ class MplCanvas(QWidget):
                 spine.set_color('white')
         else:
             # Warna dinding pane untuk 3D
-            ax.w_xaxis.set_pane_color((1.0, 1.0, 1.0, 0.05))
-            ax.w_yaxis.set_pane_color((1.0, 1.0, 1.0, 0.05))
-            ax.w_zaxis.set_pane_color((1.0, 1.0, 1.0, 0.05))
+            ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.05))
+            ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.05))
+            ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.05))
 
     def format_legend(self, ax):
         """Memformat legenda agar teks berwarna putih dan background gelap."""
@@ -667,7 +667,7 @@ class MainWindow(QMainWindow):
         self.plot_layout_filt.addWidget(canvas_vl)
 
     # =========================================================================
-    # TAB 4: DENOISING
+    # TAB 4: DENOISING (UPDATED: Window Control)
     # =========================================================================
     def create_tab_denoising(self):
         tab = QWidget()
@@ -726,7 +726,7 @@ class MainWindow(QMainWindow):
         
         window_types = ["Rectangular", "Hanning", "Hamming", "Blackman", "Triangular", "Kaiser"]
         
-        # Create Grid of Plots (2 columns)
+        # Create Grid of Plots (2 columns ideally, but VBox for simplicity here)
         for w_type in window_types:
             window = ModulDenoise.ManualWindow.get_window(w_type, N)
             applied = sine_wave * window
@@ -735,7 +735,7 @@ class MainWindow(QMainWindow):
             ax = canvas.axes
             ax.plot(window, label='Window Shape', color='cyan')
             ax.plot(applied, label='Applied to Sine', color='yellow', linestyle='--')
-            ax.set_title(f"{w_type} Window")
+            ax.set_title(f"{w_type} Window Visualization")
             ax.legend(loc='upper right')
             
             canvas.style_axis(ax)
@@ -775,7 +775,7 @@ class MainWindow(QMainWindow):
         canvas1 = MplCanvas(self, width=5, height=5)
         ax1 = canvas1.axes
         ax1.plot(t, seg['gl_filtered'], color='gray', alpha=0.5, label='Filtered Input')
-        ax1.plot(t, seg['gl_denoised'], color='#00e676', label=f'Denoised Output ({window_type})')
+        ax1.plot(t, seg['gl_denoised'], color='#00e676', label=f'Denoised ({window_type})')
         ax1.set_title(f"Cycle {selected_id} - GL Denoised")
         ax1.set_xlabel("Time (s)")
         ax1.set_ylabel("Amplitude (uV)")
@@ -789,7 +789,7 @@ class MainWindow(QMainWindow):
         canvas2 = MplCanvas(self, width=5, height=5)
         ax2 = canvas2.axes
         ax2.plot(t, seg['vl_filtered'], color='gray', alpha=0.5, label='Filtered Input')
-        ax2.plot(t, seg['vl_denoised'], color='#00e676', label=f'Denoised Output ({window_type})')
+        ax2.plot(t, seg['vl_denoised'], color='#00e676', label=f'Denoised ({window_type})')
         ax2.set_title(f"Cycle {selected_id} - VL Denoised")
         ax2.set_xlabel("Time (s)")
         ax2.set_ylabel("Amplitude (uV)")
@@ -800,7 +800,7 @@ class MainWindow(QMainWindow):
         self.plot_layout_den.addWidget(canvas2)
 
     # =========================================================================
-    # TAB 5: STFT (Gait Cycle Axis)
+    # TAB 5: STFT (Gait Cycle Axis & Control)
     # =========================================================================
     def create_tab_stft(self):
         tab = QWidget()
@@ -812,22 +812,41 @@ class MainWindow(QMainWindow):
         
         group = QGroupBox("Step 5: STFT Analysis")
         vlo = QVBoxLayout()
+        
+        # Row 1: Settings
         h1 = QHBoxLayout()
+        h1.addWidget(QLabel("Window Size:"))
+        self.spin_win_size = QSpinBox()
+        self.spin_win_size.setRange(32, 2048)
+        self.spin_win_size.setValue(256)
+        h1.addWidget(self.spin_win_size)
+        
+        h1.addWidget(QLabel("Overlap:"))
+        self.spin_overlap = QSpinBox()
+        self.spin_overlap.setRange(0, 2047)
+        self.spin_overlap.setValue(128)
+        h1.addWidget(self.spin_overlap)
+        h1.addStretch()
+        
+        # Row 2: Plot Settings
+        h2 = QHBoxLayout()
         self.chk_db_stft = QCheckBox("Use Decibel (dB) Scale")
-        self.chk_db_stft.setChecked(False)
+        self.chk_db_stft.setChecked(False) # Default False per request
         self.radio_2d_stft = QRadioButton("2D Contour")
         self.radio_3d_stft = QRadioButton("3D Surface")
         self.radio_2d_stft.setChecked(True)
         bg = QButtonGroup(self)
         bg.addButton(self.radio_2d_stft)
         bg.addButton(self.radio_3d_stft)
-        h1.addWidget(self.chk_db_stft)
-        h1.addWidget(self.radio_2d_stft)
-        h1.addWidget(self.radio_3d_stft)
-        h1.addStretch()
+        h2.addWidget(self.chk_db_stft)
+        h2.addWidget(self.radio_2d_stft)
+        h2.addWidget(self.radio_3d_stft)
+        h2.addStretch()
+        
         btn_stft = QPushButton("Compute & Plot STFT")
         btn_stft.clicked.connect(self.process_stft)
         vlo.addLayout(h1)
+        vlo.addLayout(h2)
         vlo.addWidget(btn_stft)
         group.setLayout(vlo)
         
@@ -842,9 +861,19 @@ class MainWindow(QMainWindow):
 
     def process_stft(self):
         if not self.segments: return
-        self.status_label.setText("Computing STFT...")
+        
+        win_size = self.spin_win_size.value()
+        overlap = self.spin_overlap.value()
+        
+        # Simple validation
+        if overlap >= win_size:
+            QMessageBox.warning(self, "Invalid Parameter", "Overlap must be less than Window Size.")
+            return
+
+        self.status_label.setText(f"Computing STFT (Size={win_size}, Overlap={overlap})...")
         QApplication.processEvents()
-        self.segments = ModulSTFT.compute_stft_for_segments(self.segments)
+        
+        self.segments = ModulSTFT.compute_stft_for_segments(self.segments, window_size=win_size, overlap=overlap)
         self.status_label.setText("STFT Complete.")
         self.plot_stft_ui()
 
@@ -878,11 +907,14 @@ class MainWindow(QMainWindow):
 
             if is_3d:
                 T, F = np.meshgrid(t_norm, f)
-                surf = ax.plot_surface(T, F, Z_plot, cmap='viridis', edgecolor='none')
+                # Using stride=1 to show grid resolution
+                surf = ax.plot_surface(T, F, Z_plot, cmap='viridis', edgecolor='none', rstride=1, cstride=1)
                 cbar = canvas.figure.colorbar(surf, ax=ax, label=lbl, pad=0.1)
-                ax.view_init(elev=30, azim=120)
+                # --- FIX VIEW ANGLE STFT 3D ---
+                ax.view_init(elev=40, azim=-45) 
             else:
-                mesh = ax.pcolormesh(t_norm, f, Z_plot, shading='gouraud', cmap='jet')
+                # Using pcolormesh with shading='flat'/auto to show grid blocks (pixels)
+                mesh = ax.pcolormesh(t_norm, f, Z_plot, cmap='jet', shading='auto')
                 cbar = canvas.figure.colorbar(mesh, ax=ax, label=lbl)
                 
             canvas.style_axis(ax, is_3d)
@@ -891,7 +923,7 @@ class MainWindow(QMainWindow):
             ax.set_title(f"STFT {muscle} - Cycle {sel}")
             ax.set_xlabel("% Gait Cycle")
             ax.set_ylabel("Freq (Hz)")
-            ax.set_ylim(0, 450)
+            ax.set_ylim(0, 500)
             ax.set_xlim(0, 100)
             
             canvas.fig.tight_layout(pad=3.0, h_pad=5.0)
@@ -986,6 +1018,7 @@ class MainWindow(QMainWindow):
                 T, F = np.meshgrid(t_norm, f)
                 surf = ax.plot_surface(T, F, Z_plot, cmap='plasma', edgecolor='none')
                 cbar = canvas.figure.colorbar(surf, ax=ax, label=lbl, pad=0.1)
+                # FIX VIEW ANGLE CWT 3D
                 ax.view_init(elev=40, azim=-45)
             else:
                 cf = ax.contourf(t_norm, f, Z_plot, levels=50, cmap='plasma')
@@ -1127,8 +1160,9 @@ class MainWindow(QMainWindow):
                 T, F = np.meshgrid(t_norm, f)
                 surf = ax.plot_surface(T, F, Z_plot, cmap='magma', edgecolor='none', alpha=0.9)
                 
-                # --- VISUALIZE 3D THRESHOLD PLANE ---
-                # Create a flat plane at threshold height
+                # --- VISUALIZE 3D THRESHOLD PLANE (FIXED) ---
+                # Initialize plane variables explicitly
+                # Create 4 corner points for the plane
                 x_corners = np.array([0, 100, 0, 100])
                 y_corners = np.array([f[0], f[0], f[-1], f[-1]])
                 z_corners = np.array([th_visual, th_visual, th_visual, th_visual])
@@ -1142,7 +1176,7 @@ class MainWindow(QMainWindow):
                 ax.plot_surface(X_plane, Y_plane, Z_plane, color='cyan', alpha=0.4, shade=False)
                 
                 cbar = canvas.figure.colorbar(surf, ax=ax, label="Energy Density", pad=0.1)
-                # View angle agar plane terlihat jelas memotong bukit
+                # View angle to see the plane cutting the hill
                 ax.view_init(elev=20, azim=-30)
                 
             else: # 2D Contour
