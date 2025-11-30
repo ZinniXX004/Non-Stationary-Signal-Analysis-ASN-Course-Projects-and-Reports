@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import os
 
 # Target Channel Name Constants (According to Physionet Header)
-# We use a list of strings to allow flexible matching (handling trailing spaces etc.)
+# Use a list of strings to allow flexible matching (handling trailing spaces etc.)
 TARGET_CHANNELS = {
     'FS': ['baso RT FOOT', 'baso RT FOOT '],   # Foot Switch (Right Foot)
     'GL': ['semg RT LAT.G', 'semg RT LAT.G '], # Gastrocnemius Lateralis (Right)
@@ -12,9 +12,6 @@ TARGET_CHANNELS = {
 }
 
 def get_channel_index(signal_names, target_variations):
-    """
-    Finds the channel index based on a list of target name variations.
-    """
     for i, name in enumerate(signal_names):
         # Clean whitespace and match
         if name.strip() in [t.strip() for t in target_variations]:
@@ -23,13 +20,11 @@ def get_channel_index(signal_names, target_variations):
 
 def load_raw_data(record_path):
     """
-    Loads raw data from Physionet files (.dat/.hea).
-    
     Args:
         record_path (str): Path to the record file (without extension), e.g., 'dataset/S01'
         
     Returns:
-        dict: Dictionary containing raw signals (GL, VL, FS), time array, and sampling rate.
+        dict: Dictionary containing raw signals (GL, VL, FS), time array, and sampling rate
     """
     try:
         # Read record using wfdb library
@@ -86,9 +81,6 @@ def load_raw_data(record_path):
         return None
 
 def plot_raw_signals(data_dict):
-    """
-    Simple plotting for raw data verification.
-    """
     if data_dict is None:
         return
 
@@ -125,10 +117,8 @@ def plot_raw_signals(data_dict):
     plt.tight_layout()
     plt.show()
 
-# --- Block for standalone testing (not called by main.py) ---
+# <<<< Standalone testing >>>>
 if __name__ == "__main__":
-    # Change this path according to your data location
-    # Ensure S01.dat and S01.hea are in the same folder
     test_file = "S01" 
     
     # Check if file exists in current directory (for testing)

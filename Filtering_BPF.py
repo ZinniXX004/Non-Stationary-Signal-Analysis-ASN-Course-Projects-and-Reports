@@ -6,23 +6,15 @@ METHOD_STANDARD = "Standard BPF (PDF/Delphi)"
 METHOD_RBJ = "RBJ Cascade (HPF + LPF)"
 
 class ManualFilterDesigner:
-    """
-    Handles coefficient calculation and manual filtering operations
-    without external signal processing libraries.
-    """
     def __init__(self, fs):
         self.fs = float(fs)
         self.T = 1.0 / self.fs
 
-    # -------------------------------------------------------------------------
     # METHOD 1: Standard BPF (From PDF/Delphi)
     # Derivation: H(s) -> Bilinear Transform -> H(z)
-    # -------------------------------------------------------------------------
     def compute_standard_bpf_coeffs(self, f_low, f_high):
-        """
-        Calculates coefficients for a single 2nd Order Bandpass Filter.
-        Based on Analog Prototype H(s) = (BW*s) / (s^2 + BW*s + w0^2).
-        """
+        # Based on Analog Prototype H(s) = (BW*s) / (s^2 + BW*s + w0^2)
+        
         # 1. Pre-warping frequencies
         # w_d = (2/T) * tan(w_a * T / 2)
         wd_low = 2 * self.fs * np.tan((2 * np.pi * f_low) / (2 * self.fs))
@@ -62,14 +54,10 @@ class ManualFilterDesigner:
         
         return b, a
 
-    # -------------------------------------------------------------------------
     # METHOD 2: RBJ Cascade (Audio EQ Cookbook)
     # Derivation: 2nd Order HPF followed by 2nd Order LPF
-    # -------------------------------------------------------------------------
+    #  Calculates coefficients for RBJ Biquad (LPF or HPF).
     def compute_rbj_coeffs(self, cutoff, filter_type):
-        """
-        Calculates coefficients for RBJ Biquad (LPF or HPF).
-        """
         w0 = 2 * np.pi * cutoff / self.fs
         alpha = np.sin(w0) / (2 * 0.707) # Q = 0.707 (Butterworth)
         cos_w0 = np.cos(w0)
@@ -96,9 +84,7 @@ class ManualFilterDesigner:
             
         return b, a
 
-    # -------------------------------------------------------------------------
     # Core Filtering Logic (Difference Equation)
-    # -------------------------------------------------------------------------
     def lfilter_manual(self, b, a, x):
         """Direct Form I implementation."""
         y = np.zeros_like(x)
@@ -121,18 +107,16 @@ class ManualFilterDesigner:
         return y
 
     def filtfilt_manual(self, b, a, x):
-        """Zero-phase filtering (Forward-Backward)."""
+        # Zero-phase filtering (Forward-Backward)
         y_fwd = self.lfilter_manual(b, a, x)
         y_rev = y_fwd[::-1]
         y_back = self.lfilter_manual(b, a, y_rev)
         return y_back[::-1]
 
-    # -------------------------------------------------------------------------
     # Analysis Helper: Manual Frequency Response
-    # -------------------------------------------------------------------------
     def freqz_manual(self, b, a, n_points=512):
         """
-        Calculates Frequency Response H(e^jw) manually.
+        Calculates Frequency Response H(e^jw)
         H(z) = B(z)/A(z) evaluated at z = e^(j*w)
         """
         w = np.linspace(0, np.pi, n_points) # 0 to Nyquist
@@ -149,10 +133,6 @@ class ManualFilterDesigner:
         return freqs_hz, np.abs(H)
 
 def apply_bpf(segments, method=METHOD_STANDARD):
-    """
-    Main function called by GUI.
-    Applies BPF (20-450 Hz) using the selected method.
-    """
     if not segments:
         return []
 
@@ -197,10 +177,6 @@ def apply_bpf(segments, method=METHOD_STANDARD):
     return processed_segments
 
 def get_frequency_response_data(fs, method=METHOD_STANDARD):
-    """
-    Returns (freqs, magnitude_linear) for the selected method to be plotted in GUI.
-    NO dB conversion, as requested.
-    """
     designer = ManualFilterDesigner(fs)
     f_low, f_high = 20.0, 450.0
     
@@ -223,7 +199,7 @@ def get_frequency_response_data(fs, method=METHOD_STANDARD):
     return f, mag
 
 def plot_filtered_comparison(segments, cycle_idx=0):
-    """Helper for standalone testing"""
+    # Helper for standalone testing
     if not segments: return
     seg = segments[cycle_idx]
     t = seg['time'] - seg['time'][0]
@@ -235,7 +211,7 @@ def plot_filtered_comparison(segments, cycle_idx=0):
     plt.legend()
     plt.show()
 
-# --- Standalone Testing ---
+# <<<< Standalone Testing >>>>
 if __name__ == "__main__":
     fs = 2000
     t = np.linspace(0, 1, fs)

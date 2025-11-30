@@ -2,19 +2,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class ManualWindow:
-    """
-    Manual implementation of Signal Windowing functions.
-    Calculates window coefficients using raw mathematical formulas.
-    """
     @staticmethod
     def get_window(window_type, N, beta=14.0):
         """
-        Generates a window array of length N.
+        Generates a window array of length N
         
-        Args:
-            window_type (str): 'Rectangular', 'Hanning', 'Hamming', 'Blackman', 'Triangular', 'Kaiser'.
-            N (int): Length of the window.
-            beta (float): Shape parameter for Kaiser window (default 14.0).
+        Arguments:
+            window_type (str): 'Rectangular', 'Hanning', 'Hamming', 'Blackman', 'Triangular', 'Kaiser'
+            N (int): Length of the window
+            beta (float): Shape parameter for Kaiser window (default 14.0)
         """
         if N <= 1:
             return np.ones(N)
@@ -74,10 +70,7 @@ class ManualWindow:
             return np.ones(N)
 
 class ManualDWT:
-    """
-    Manual Implementation of Discrete Wavelet Transform (DWT).
-    Uses the Mallat Algorithm (Filter Bank) with Daubechies 4 (db4) coefficients.
-    """
+    # Uses the Mallat Algorithm (Filter Bank) with Daubechies 4 (db4) coefficients.
     def __init__(self):
         # Decomposition Low-Pass Coefficients (L_D) for db4
         self.ld_coeffs = np.array([
@@ -99,25 +92,21 @@ class ManualDWT:
         self.hr_coeffs = self.hd_coeffs[::-1]
 
     def downsample(self, arr):
-        """Take every even index element (Decimation by 2)."""
+        # Take every even index element (Decimation by 2)
         return arr[1::2]
 
     def upsample(self, arr):
-        """Insert zeros between elements (Interpolation)."""
+        # Insert zeros between elements (Interpolation)
         up = np.zeros(len(arr) * 2)
         up[::2] = arr
         return up
 
     def pad_signal(self, signal):
-        """Symmetric padding to handle convolution edge effects."""
+        # Symmetric padding to handle convolution edge effects
         pad_len = len(self.ld_coeffs) // 2
         return np.pad(signal, (pad_len, pad_len), mode='edge')
 
     def dwt_decomposition(self, signal, levels=8):
-        """
-        Performs Forward DWT (Multilevel Decomposition).
-        Returns list of coefficients: [cA_n, cD_n, cD_n-1, ..., cD_1]
-        """
         coeffs = []
         current_appx = signal
         
@@ -141,17 +130,12 @@ class ManualDWT:
         return coeffs[::-1]
 
     def idwt_reconstruction(self, coeffs):
-        """
-        Performs Inverse DWT (Multilevel Reconstruction).
-        Includes Length Synchronization to prevent shape mismatch errors.
-        """
         current_appx = coeffs[0]
         details = coeffs[1:]
         
         for cD in details:
-            # --- LENGTH SYNCHRONIZATION ---
             # Ensure the approximation vector matches the detail vector length
-            # before upsampling, as they must align for the next level.
+            # before upsampling, as they must align for the next level
             if len(current_appx) != len(cD):
                 if len(current_appx) > len(cD):
                     current_appx = current_appx[:len(cD)]
@@ -168,7 +152,6 @@ class ManualDWT:
             rec_detail = np.convolve(up_detail, self.hr_coeffs, mode='full')
             
             # 3. Summation and Trimming
-            # 'full' convolution increases length. We must trim to match expected size.
             rec_sum = rec_appx + rec_detail
             
             target_len = len(up_appx)
@@ -188,20 +171,19 @@ class ManualDWT:
         return current_appx
 
 def soft_thresholding(x, threshold):
-    """Manual Soft Thresholding Function."""
     # y = sign(x) * max(0, |x| - T)
     return np.sign(x) * np.maximum(np.abs(x) - threshold, 0)
 
 def denoise_dwt(segments, window_type='Rectangular'):
     """
-    Main function for DWT Denoising pipeline.
+    Main function for DWT Denoisings
     
     Steps:
-    1. Apply selected Window Function.
-    2. Decompose using DWT (db4, level 8).
-    3. Estimate Noise using MAD on Detail Coeffs Level 1.
-    4. Apply Soft Thresholding.
-    5. Reconstruct Signal.
+    1. Apply selected Window Function
+    2. Decompose using DWT (db4, level 8)
+    3. Estimate Noise using MAD on Detail Coeffs Level 1
+    4. Apply Soft Thresholding
+    5. Reconstruct Signal
     """
     if not segments:
         return []
@@ -214,7 +196,6 @@ def denoise_dwt(segments, window_type='Rectangular'):
     for seg in segments:
         new_seg = seg.copy()
         
-        # --- FIX: Safer input retrieval ---
         # Prioritize 'gl_filtered', fallback to 'gl_segment' (raw)
         if 'gl_filtered' in seg:
             gl_input = seg['gl_filtered']
@@ -230,7 +211,7 @@ def denoise_dwt(segments, window_type='Rectangular'):
         N = len(gl_input)
         window = ManualWindow.get_window(window_type, N)
         
-        # --- Process GL ---
+        # Process GL
         try:
             # 1. Apply Window
             gl_windowed = gl_input * window
@@ -264,7 +245,7 @@ def denoise_dwt(segments, window_type='Rectangular'):
             print(f"[!] Error denoising GL cycle {seg['cycle_id']}: {e}")
             new_seg['gl_denoised'] = gl_input # Fallback
 
-        # --- Process VL ---
+        # Process VL
         try:
             # 1. Apply Window
             vl_windowed = vl_input * window
@@ -301,7 +282,6 @@ def denoise_dwt(segments, window_type='Rectangular'):
     return processed_segments
 
 def plot_denoising_comparison(segments, cycle_idx=0):
-    """Visualizes the Denoising Result vs Input."""
     if not segments: return
     
     seg = segments[cycle_idx]
@@ -342,7 +322,7 @@ def plot_denoising_comparison(segments, cycle_idx=0):
     plt.tight_layout()
     plt.show()
 
-# --- Standalone Testing Block ---
+# <<<< Standalone Testing Block >>>>
 if __name__ == "__main__":
     # Dummy Data Generation
     t = np.linspace(0, 1, 2000)

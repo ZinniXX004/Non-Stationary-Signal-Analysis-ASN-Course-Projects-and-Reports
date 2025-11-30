@@ -3,47 +3,60 @@ import matplotlib.pyplot as plt
 
 def get_envelope(scalogram):
     """
-    Mengubah Scalogram 2D (Freq x Time) menjadi 1D Energy Profile.
-    Metode: Menjumlahkan energi di seluruh pita frekuensi (Marginal Integral).
-    Ini merepresentasikan total instantaneous energy dari otot.
+    Args:
+        scalogram (array): 2D array of energy density
+        
+    Returns:
+        array: 1D array of total energy over time
     """
-    # axis 0 adalah frekuensi, axis 1 adalah waktu
+    # axis 0 is frequency, axis 1 is time
     return np.sum(scalogram, axis=0)
 
 def detect_bursts(energy_profile, fs, threshold_ratio=0.01):
     """
-    Algoritma Deteksi Onset/Offset dengan Double Constraint (Merge & Discard).
+    Logic:
+    1. Thresholding: Detect areas above 1% of peak energy
+    2. Merging: Combine bursts separated by gaps < 30ms
+    3. Discarding: Remove bursts shorter than 30ms
+    
+    Args:
+        energy_profile (array): 1D energy array
+        fs (float): Sampling frequency
+        threshold_ratio (float): Threshold level relative to peak (default 0.01)
+        
+    Returns:
+        list: List of tuples [(start_idx, end_idx), ...] representing activations
     """
-    # 1. Tentukan Threshold Absolut
+    # 1. Determine Absolute Threshold
     peak_energy = np.max(energy_profile)
     threshold_val = threshold_ratio * peak_energy
     
-    # 2. Binarisasi (0 atau 1)
+    # 2. Binarization (0 or 1)
     is_active = (energy_profile > threshold_val).astype(int)
     
-    # 3. Deteksi Tepi (Rising & Falling Edges)
-    # Pad dengan 0 di kedua ujung agar deteksi tepi aman di batas data
+    # 3. Edge Detection (Rising & Falling Edges)
+    # Pad with 0 at both ends to detect edges at boundaries safely
     diff = np.diff(np.pad(is_active, (1, 1), 'constant'))
     
-    # Indeks onset (perubahan 0 ke 1) dan offset (1 ke 0)
-    # Koreksi indeks -1 karena padding di awal
+    # Find indices: Rising (+1) is Onset, Falling (-1) is Offset
+    # Correction -1 because of padding at the start
     onsets = np.where(diff == 1)[0]
     offsets = np.where(diff == -1)[0]
     
     if len(onsets) == 0:
         return []
 
-    # Gabungkan menjadi list of [start, end]
+    # Combine into candidate list [start, end]
     candidates = []
     for on, off in zip(onsets, offsets):
         candidates.append([on, off])
         
-    # --- Constraint Processing (Debouncing) ---
-    # 30 ms dalam jumlah sampel
-    # ms_limit = 0.03 detik
+    # Constraint Processing (Debouncing)
+    # Constraint: 30 ms limit
+    # samples = 0.03 * fs
     min_samples = int(0.03 * fs) 
     
-    # Tahap A: Merging (Gabung jika jeda terlalu singkat)
+    # Phase A: Merging (Join if gap is too short)
     if not candidates: return []
     
     merged = [candidates[0]]
@@ -55,13 +68,13 @@ def detect_bursts(energy_profile, fs, threshold_ratio=0.01):
         gap = curr_start - last_end
         
         if gap < min_samples:
-            # Gabung: Update end dari kandidat terakhir
+            # Merge: Update the end of the last candidate
             merged[-1][1] = curr_end
         else:
-            # Jeda cukup lama, tambahkan sebagai aktivasi baru
+            # Gap is sufficient, add as new activation
             merged.append([curr_start, curr_end])
             
-    # Tahap B: Discarding (Buang jika durasi terlalu singkat)
+    # Phase B: Discarding (Remove if duration is too short)
     final_activations = []
     for start, end in merged:
         duration = end - start
@@ -71,12 +84,9 @@ def detect_bursts(energy_profile, fs, threshold_ratio=0.01):
     return final_activations
 
 def apply_threshold(segments):
-    """
-    Wrapper utama untuk memproses semua segmen.
-    """
     if not segments: return []
     
-    print(f"[-] Menentukan Onset/Offset (Threshold 1%, Min Durasi/Gap 30ms)...")
+    print(f"[-] Detecting Onset/Offset (Threshold 1%, Min Duration/Gap 30ms)...")
     
     processed_segments = []
     
@@ -84,27 +94,33 @@ def apply_threshold(segments):
         new_seg = seg.copy()
         fs = seg['fs']
         
-        # --- Proses GL ---
+        # Process Gastrocnemius (GL)
         if 'cwt_gl' in seg:
             E_gl = seg['cwt_gl']['E']
             profile_gl = get_envelope(E_gl)
             
             activations_gl = detect_bursts(profile_gl, fs)
             
-            # Simpan hasil dalam detik dan indeks
+            # Store results (indices and absolute times)
             res_gl = []
             for start, end in activations_gl:
+                # Ensure end index is within bounds
+                end_idx_safe = min(end, len(seg['time']))
+                # Convert index to time using the segment's time array
+                # Use end_idx_safe - 1 to stay within array bounds for indexing
+                end_time_idx = end_idx_safe - 1 if end_idx_safe > 0 else 0
+                
                 res_gl.append({
                     'start_idx': start,
                     'end_idx': end,
                     'start_t': seg['time'][start],
-                    'end_t': seg['time'][end-1] if end < len(seg['time']) else seg['time'][-1]
+                    'end_t': seg['time'][end_time_idx]
                 })
             new_seg['activations_gl'] = res_gl
-            # Simpan juga profile 1D untuk visualisasi
+            # Save profile for visualization
             new_seg['energy_profile_gl'] = profile_gl
 
-        # --- Proses VL ---
+        # Process Vastus Lateralis (VL)
         if 'cwt_vl' in seg:
             E_vl = seg['cwt_vl']['E']
             profile_vl = get_envelope(E_vl)
@@ -113,11 +129,14 @@ def apply_threshold(segments):
             
             res_vl = []
             for start, end in activations_vl:
+                end_idx_safe = min(end, len(seg['time']))
+                end_time_idx = end_idx_safe - 1 if end_idx_safe > 0 else 0
+                
                 res_vl.append({
                     'start_idx': start,
                     'end_idx': end,
                     'start_t': seg['time'][start],
-                    'end_t': seg['time'][end-1] if end < len(seg['time']) else seg['time'][-1]
+                    'end_t': seg['time'][end_time_idx]
                 })
             new_seg['activations_vl'] = res_vl
             new_seg['energy_profile_vl'] = profile_vl
@@ -127,9 +146,6 @@ def apply_threshold(segments):
     return processed_segments
 
 def plot_threshold_result(segments, cycle_idx=0, muscle='GL'):
-    """
-    Visualisasi Profil Energi 1D beserta area yang terdeteksi aktif.
-    """
     if not segments: return
     
     seg = segments[cycle_idx]
@@ -144,23 +160,23 @@ def plot_threshold_result(segments, cycle_idx=0, muscle='GL'):
         title = "Vastus (VL)"
         
     if profile is None:
-        print("Data aktivasi belum dihitung.")
+        print("Activation data not computed.")
         return
         
     time = seg['time']
-    # Normalisasi waktu mulai dari 0
+    # Normalize time to start at 0 for this plot
     t_plot = time - time[0]
     
     plt.figure(figsize=(10, 5))
     
-    # Plot Profil Energi
+    # Plot Energy Profile
     plt.plot(t_plot, profile, color='black', linewidth=1, label='Integrated Energy (CWT)')
     
     # Plot Threshold Line
     th_val = 0.01 * np.max(profile)
     plt.axhline(th_val, color='orange', linestyle='--', label='Threshold (1%)')
     
-    # Highlight Area Aktif
+    # Highlight Active Areas
     if activations:
         for i, act in enumerate(activations):
             t_start = act['start_t'] - time[0]
@@ -169,7 +185,7 @@ def plot_threshold_result(segments, cycle_idx=0, muscle='GL'):
             plt.axvspan(t_start, t_end, color='green', alpha=0.3, 
                         label='Detected Burst' if i == 0 else "")
             
-            # Tandai Onset/Offset
+            # Mark Onset/Offset
             plt.axvline(t_start, color='green', linestyle='-', linewidth=0.5)
             plt.axvline(t_end, color='red', linestyle='-', linewidth=0.5)
             
@@ -181,31 +197,29 @@ def plot_threshold_result(segments, cycle_idx=0, muscle='GL'):
     plt.tight_layout()
     plt.show()
 
-# --- Blok Testing Mandiri ---
+# <<<< Standalone Test Block >>>>
 if __name__ == "__main__":
-    # Simulasi Energi Profile
+    # Simulate Energy Profile
     fs = 2000
     t = np.linspace(0, 1, fs)
     
-    # Buat sinyal energi palsu
-    # Burst 1: Valid (panjang 100ms)
-    # Burst 2: Noise pendek (panjang 10ms) -> Harus dibuang
-    # Burst 3: Dekat dengan Burst 1 (jarak 10ms) -> Harus digabung ke Burst 1
+    # Create fake energy signal
+    # Burst 1: Valid (length 100ms)
+    # Burst 2: Noise short (length 10ms) -> Should be Discarded
+    # Burst 3: Close to Burst 1 (gap 10ms) -> Should be Merged with Burst 1
     
     energy = np.zeros_like(t)
     
-    # Burst Utama (0.2s - 0.3s)
+    # Main Burst (0.2s - 0.3s)
     energy[400:600] = 100 
     
-    # Noise (0.31s - 0.35s) -> Jarak 0.01s (10ms) dari burst utama.
-    # Karena gap 10ms < 30ms, ini harusnya MERGE dengan burst utama.
+    # Noise close to main burst (0.31s - 0.35s) -> Gap 10ms < 30ms -> MERGE
     energy[620:700] = 80
     
-    # Noise Terpisah Jauh tapi Pendek (0.8s - 0.81s) -> Durasi 10ms
-    # Karena durasi 10ms < 30ms, ini harusnya DISCARD.
+    # Short standalone noise (0.8s - 0.81s) -> Duration 10ms < 30ms -> DISCARD
     energy[1600:1620] = 90
     
-    # Normalisasi input biar sesuai struktur
+    # Normalize input structure
     dummy_seg = [{
         'cycle_id': 1,
         'fs': fs,
@@ -216,13 +230,9 @@ if __name__ == "__main__":
     res = apply_threshold(dummy_seg)
     activations = res[0]['activations_gl']
     
-    print(f"Ditemukan {len(activations)} aktivasi.")
+    print(f"Found {len(activations)} activations.")
     for i, act in enumerate(activations):
         dur = act['end_t'] - act['start_t']
-        print(f"Aktivasi {i+1}: {act['start_t']:.3f}s - {act['end_t']:.3f}s (Durasi: {dur*1000:.1f} ms)")
+        print(f"Activation {i+1}: {act['start_t']:.3f}s - {act['end_t']:.3f}s (Duration: {dur*1000:.1f} ms)")
         
     plot_threshold_result(res, muscle='GL')
-    
-    # Harapan Output:
-    # Hanya ada 1 aktivasi besar gabungan (0.2s sampai 0.35s).
-    # Burst pendek di 0.8s hilang.

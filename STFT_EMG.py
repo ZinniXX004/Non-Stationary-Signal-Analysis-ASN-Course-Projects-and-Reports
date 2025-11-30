@@ -4,20 +4,17 @@ from mpl_toolkits.mplot3d import Axes3D
 
 class ManualFFT:
     """
-    Manual implementation of Fast Fourier Transform (FFT).
-    Uses the Cooley-Tukey Radix-2 Recursive algorithm.
+    Manual implementation of Fast Fourier Transform (FFT)
+    Uses the Cooley-Tukey Radix-2 Recursive algorithm
     """
     def __init__(self):
         pass
 
     def _next_power_of_2(self, x):
-        """Finds the next power of 2 greater than or equal to x."""
+        # Finds the next power of 2 greater than or equal to x
         return 1 if x == 0 else 2**(x - 1).bit_length()
 
     def recursive_fft(self, x):
-        """
-        Cooley-Tukey Recursive FFT Algorithm.
-        """
         N = len(x)
         if N <= 1: return x
         
@@ -34,7 +31,6 @@ class ManualFFT:
         return left + right
 
     def compute_fft(self, signal):
-        """Wrapper with zero-padding."""
         n_original = len(signal)
         n_padded = self._next_power_of_2(n_original)
         
@@ -47,7 +43,6 @@ class ManualFFT:
         return np.array(spectrum), n_padded
 
 class ManualWindow:
-    """Manual implementation of Window Functions."""
     @staticmethod
     def get_window(window_type, N, beta=14.0):
         if N <= 1: return np.ones(N)
@@ -90,7 +85,6 @@ class ManualSTFT:
         self.fft_solver = ManualFFT()
 
     def compute(self, signal, fs):
-        """Computes STFT manually."""
         n_signal = len(signal)
         step = self.window_size - self.overlap
         
@@ -134,7 +128,6 @@ class ManualSTFT:
         return freqs, np.array(time_stamps), Zxx
 
 def compute_stft_for_segments(segments, window_size=256, overlap=128, window_type='Hanning'):
-    """Wrapper for STFT with adjustable parameters."""
     if not segments: return []
     
     stft_solver = ManualSTFT(window_size, overlap, window_type)
@@ -166,10 +159,6 @@ def compute_stft_for_segments(segments, window_size=256, overlap=128, window_typ
     return processed_segments
 
 def plot_stft(segments, cycle_idx=0, muscle='GL', use_db=False, mode='2D'):
-    """
-    Plotting function.
-    X-Axis: % Gait Cycle (0-100).
-    """
     if not segments: return
     
     seg = segments[cycle_idx]
@@ -213,7 +202,7 @@ def plot_stft(segments, cycle_idx=0, muscle='GL', use_db=False, mode='2D'):
         
         T_grid, F_grid = np.meshgrid(t_norm, f)
         
-        # FIX VIEW ANGLE: azim=-45 ensures 0->100 goes Left->Right
+        # Fix view angle: azim=-45 ensures 0->100 goes Left->Right
         # stride=1 makes the grid visible
         surf = ax.plot_surface(T_grid, F_grid, Z_plot, cmap='viridis', 
                                edgecolor='none', rstride=1, cstride=1)
@@ -233,7 +222,7 @@ def plot_stft(segments, cycle_idx=0, muscle='GL', use_db=False, mode='2D'):
     plt.tight_layout()
     plt.show()
 
-# --- Standalone Test Block ---
+# <<<< Standalone Test Block >>>>
 if __name__ == "__main__":
     fs_test = 2000
     t_dur = np.linspace(0, 1, fs_test)

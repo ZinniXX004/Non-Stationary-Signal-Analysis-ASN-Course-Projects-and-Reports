@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QPushButton, QLabel, QTabWidget, 
     QScrollArea, QLineEdit, QComboBox, QCheckBox, 
     QSpinBox, QDoubleSpinBox, QMessageBox, QFrame, 
-    QGroupBox, QRadioButton, QButtonGroup
+    QGroupBox, QRadioButton, QButtonGroup, QTextEdit,
+    QSplitter
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon, QFont, QPalette, QColor
@@ -25,10 +26,9 @@ import Denoising_DWT_EMG as ModulDenoise
 import STFT_EMG as ModulSTFT
 import CWT_EMG as ModulCWT
 import Threshold as ModulThreshold
+import Result_Reporting
 
-# -----------------------------------------------------------------------------
-# THEME CONFIGURATION (DARK VIOLET MODERN)
-# -----------------------------------------------------------------------------
+# THEME CONFIGURATION (DARK VIOLET)
 THEME_CSS = """
 QMainWindow {
     background-color: #121212;
@@ -94,14 +94,14 @@ QGroupBox::title {
     padding: 0 5px;
     left: 10px;
 }
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit {
     background-color: #2c2c3e;
     border: 1px solid #555;
     border-radius: 3px;
     padding: 5px;
     color: white;
 }
-QLineEdit:focus, QSpinBox:focus {
+QLineEdit:focus, QSpinBox:focus, QTextEdit:focus {
     border: 1px solid #7e57c2;
 }
 QScrollArea {
@@ -135,23 +135,24 @@ QToolButton {
 QToolButton:hover {
     background-color: #5e35b1;
 }
+QSplitter::handle {
+    background-color: #444;
+}
 """
 
-# -----------------------------------------------------------------------------
 # GRAPHICS HELPER CLASS (MATPLOTLIB CANVAS)
-# -----------------------------------------------------------------------------
 class MplCanvas(QWidget):
     """
     Wrapper Widget containing:
     1. Navigation Toolbar (Zoom, Pan, Save)
-    2. FigureCanvas (Area Grafik)
+    2. FigureCanvas (Plot Area)
     """
     def __init__(self, parent=None, width=5, height=4, dpi=100, is_3d=False):
         super().__init__(parent)
         
         # Initialize Figure
         self.fig = Figure(figsize=(width, height), dpi=dpi)
-        self.fig.patch.set_facecolor('#1e1e2e') # Background global figure
+        self.fig.patch.set_facecolor('#1e1e2e') # Global figure background
         
         self.canvas = FigureCanvas(self.fig)
         self.figure = self.fig 
@@ -159,11 +160,11 @@ class MplCanvas(QWidget):
         # Initialize Axes first (default)
         self.axes = self.fig.add_subplot(111, projection='3d' if is_3d else None)
         
-        # Setup Toolbar Navigasi
+        # Setup Navigation Toolbar
         self.toolbar = NavigationToolbar(self.canvas, self)
         self.toolbar.setStyleSheet("background-color: #2c2c3e; color: white;")
         
-        # Layout Vertikal: Toolbar di atas, Grafik di bawah
+        # Vertical layout
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(5)
@@ -178,19 +179,16 @@ class MplCanvas(QWidget):
         self.style_axis(self.axes, is_3d)
 
     def style_axis(self, ax, is_3d=False):
-        """
-        Mengatur warna komponen sumbu (axis) agar kontras dengan tema gelap.
-        """
         ax.set_facecolor('#1e1e2e')
         
-        # Warna Judul dan Label
+        # Title and Color Lable
         ax.title.set_color('white')
         ax.xaxis.label.set_color('white')
         ax.yaxis.label.set_color('white')
         if is_3d: 
             ax.zaxis.label.set_color('white')
         
-        # Warna Angka (Ticks)
+        # Number Color (Ticks)
         ax.tick_params(axis='x', colors='white')
         ax.tick_params(axis='y', colors='white')
         if is_3d: 
@@ -210,7 +208,6 @@ class MplCanvas(QWidget):
             ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.05))
 
     def format_legend(self, ax):
-        """Memformat legenda agar teks berwarna putih dan background gelap."""
         legend = ax.get_legend()
         if legend:
             legend.get_frame().set_facecolor('#2c2c3e')
@@ -219,21 +216,18 @@ class MplCanvas(QWidget):
                 text.set_color("white")
 
     def format_colorbar(self, cbar):
-        """Memformat colorbar agar label dan ticks berwarna putih."""
         cbar.ax.yaxis.set_tick_params(color='white')
         plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='white')
         cbar.set_label(cbar.ax.get_ylabel(), color='white')
 
-# -----------------------------------------------------------------------------
-# KELAS UTAMA GUI (MAIN WINDOW)
-# -----------------------------------------------------------------------------
+# MAIN WINDOW
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ASN - EMG Gait Analysis System (Physionet)")
+        self.setWindowTitle("5023231017 - Jeremia Christ Immanuel Manalu - ASN - EMG Gait Analysis System (Physionet Dataset)")
         self.setGeometry(100, 100, 1280, 850)
         
-        # Variabel Penyimpanan Data
+        # Data Storage Variable
         self.raw_data = None
         self.segments = None 
         
@@ -248,7 +242,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         
-        # --- Header ---
+        # Header
         header_layout = QHBoxLayout()
         title_label = QLabel("EMG Movement Signal Analysis Pipeline")
         title_label.setStyleSheet("font-size: 18pt; font-weight: bold; color: #b39ddb;")
@@ -268,11 +262,11 @@ class MainWindow(QMainWindow):
         
         main_layout.addLayout(header_layout)
         
-        # --- Tabs Container ---
+        # Tabs Container
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs)
         
-        # Inisialisasi Tab
+        # Initialize Tabs
         self.create_tab_load()
         self.create_tab_segmentation()
         self.create_tab_filtering()
@@ -281,13 +275,11 @@ class MainWindow(QMainWindow):
         self.create_tab_cwt()
         self.create_tab_threshold()
         
-        # --- Status Bar ---
+        # Status Bar
         self.status_label = QLabel("Status: Ready. Please load data.")
         self.statusBar().addWidget(self.status_label)
 
-    # =========================================================================
     # TAB 1: LOAD DATA
-    # =========================================================================
     def create_tab_load(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -337,7 +329,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Could not load record '{rec_name}'. Check file existence.")
 
     def plot_raw_data_ui(self):
-        # Bersihkan plot lama
+        # Clear Old Plot
         while self.plot_layout_raw.count():
             child = self.plot_layout_raw.takeAt(0)
             if child.widget():
@@ -347,7 +339,7 @@ class MainWindow(QMainWindow):
         
         time = self.raw_data['time']
         
-        # --- STRATEGI: 3 Separate Canvases ---
+        # 3 Separate Canvases
         
         # 1. Canvas Foot Switch
         canvas1 = MplCanvas(self, width=5, height=4, dpi=100)
@@ -355,7 +347,7 @@ class MainWindow(QMainWindow):
         ax1.plot(time, self.raw_data['signal_fs'], color='#e0e0e0', linewidth=0.8)
         ax1.set_title("Foot Switch (Channel 7)")
         ax1.set_xlabel("Time (s)")
-        ax1.set_ylabel("Amplitude (V)")
+        ax1.set_ylabel("Amplitude (mV)")
         canvas1.style_axis(ax1)
         canvas1.fig.tight_layout()
         self.plot_layout_raw.addWidget(canvas1)
@@ -366,7 +358,7 @@ class MainWindow(QMainWindow):
         ax2.plot(time, self.raw_data['signal_gl'], color='#4fc3f7', linewidth=0.8)
         ax2.set_title("Gastrocnemius Lateralis (Channel 10)")
         ax2.set_xlabel("Time (s)")
-        ax2.set_ylabel("Amplitude (uV)")
+        ax2.set_ylabel("Amplitude (mV)")
         canvas2.style_axis(ax2)
         canvas2.fig.tight_layout()
         self.plot_layout_raw.addWidget(canvas2)
@@ -377,14 +369,12 @@ class MainWindow(QMainWindow):
         ax3.plot(time, self.raw_data['signal_vl'], color='#ff8a65', linewidth=0.8)
         ax3.set_title("Vastus Lateralis (Channel 13)")
         ax3.set_xlabel("Time (s)")
-        ax3.set_ylabel("Amplitude (uV)")
+        ax3.set_ylabel("Amplitude (mV)")
         canvas3.style_axis(ax3)
         canvas3.fig.tight_layout()
         self.plot_layout_raw.addWidget(canvas3)
 
-    # =========================================================================
     # TAB 2: SEGMENTATION
-    # =========================================================================
     def create_tab_segmentation(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -396,7 +386,7 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Step 2: Segmentation & Cycle Selection")
         vlo = QVBoxLayout()
         
-        # Baris 1: Tombol Run
+        # Line 1: Run Button
         row1 = QHBoxLayout()
         btn_seg = QPushButton("Run Segmentation")
         btn_seg.clicked.connect(self.process_segmentation)
@@ -404,7 +394,7 @@ class MainWindow(QMainWindow):
         row1.addWidget(btn_seg)
         row1.addStretch()
         
-        # Baris 2: Selector Siklus
+        # Line 2: Cycle Selector
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("Select Cycle to Inspect:"))
         self.spin_cycle = QSpinBox()
@@ -443,11 +433,13 @@ class MainWindow(QMainWindow):
             # Set value 1 and call plot
             self.spin_cycle.setValue(1)
             # Note: setValue triggers valueChanged -> plot_segmentation_ui
+            if self.spin_cycle.value() == 1:
+                self.plot_segmentation_ui()
         else:
             self.status_label.setText("Segmentation failed. No cycles found.")
 
     def plot_segmentation_ui(self):
-        # Membersihkan layout dengan tuntas
+        # Clear layout
         while self.plot_layout_seg.count():
             child = self.plot_layout_seg.takeAt(0)
             if child.widget():
@@ -460,10 +452,10 @@ class MainWindow(QMainWindow):
         
         seg = self.segments[selected_id - 1]
         
-        # --- FIX: Use Absolute Time from segment dictionary ---
+        # Use Absolute Time from segment dictionary
         t_abs = seg['time'] 
         
-        # --- STRATEGI: 4 Separate Canvases ---
+        # 4 Separate Canvases
         
         # 1. Canvas Full Signal
         canvas1 = MplCanvas(self, width=5, height=4)
@@ -471,7 +463,7 @@ class MainWindow(QMainWindow):
         ax1.plot(self.raw_data['time'], self.raw_data['signal_fs'], color='white', alpha=0.5, linewidth=0.5, label='Raw FS')
         ax1.axvspan(t_abs[0], t_abs[-1], color='yellow', alpha=0.3, label='Selected Cycle')
         ax1.set_title(f"Full Foot Switch Signal ({len(self.segments)} Cycles)")
-        ax1.set_ylabel("Amplitude (V)")
+        ax1.set_ylabel("Amplitude (mV)")
         ax1.set_xlabel("Time (s)")
         ax1.legend(loc='upper right', fontsize='small')
         canvas1.format_legend(ax1)
@@ -485,10 +477,10 @@ class MainWindow(QMainWindow):
         
         ax2.plot(t_abs, seg['fs_segment'], color='#e0e0e0')
         ax2.set_title(f"Cycle {selected_id} - Foot Switch Segment")
-        ax2.set_ylabel("Amplitude (V)")
+        ax2.set_ylabel("Amplitude (mV)")
         ax2.set_xlabel("Time (s) [Absolute]")
         
-        # FIX: Heel Strike and Toe Off lines using absolute time
+        # Heel Strike and Toe Off lines using absolute time
         ax2.axvline(t_abs[0], color='#ff5252', linestyle='--', label='Heel Strike (Start)')
         ax2.axvline(t_abs[-1], color='#e040fb', linestyle='--', label='Next Heel Strike')
         
@@ -508,7 +500,7 @@ class MainWindow(QMainWindow):
         ax3 = canvas3.axes
         ax3.plot(t_abs, seg['gl_segment'], color='#4fc3f7')
         ax3.set_title(f"Cycle {selected_id} - Gastrocnemius (GL) Raw")
-        ax3.set_ylabel("Amplitude (uV)")
+        ax3.set_ylabel("Amplitude (mV)")
         ax3.set_xlabel("Time (s) [Absolute]")
         
         ax3.axvline(t_abs[0], color='#ff5252', linestyle='--', alpha=0.5)
@@ -523,7 +515,7 @@ class MainWindow(QMainWindow):
         ax4 = canvas4.axes
         ax4.plot(t_abs, seg['vl_segment'], color='#ff8a65')
         ax4.set_title(f"Cycle {selected_id} - Vastus (VL) Raw")
-        ax4.set_ylabel("Amplitude (uV)")
+        ax4.set_ylabel("Amplitude (mV)")
         ax4.set_xlabel("Time (s) [Absolute]")
         
         ax4.axvline(t_abs[0], color='#ff5252', linestyle='--', alpha=0.5)
@@ -533,9 +525,7 @@ class MainWindow(QMainWindow):
         canvas4.fig.tight_layout()
         self.plot_layout_seg.addWidget(canvas4)
 
-    # =========================================================================
     # TAB 3: FILTERING (UPDATED FOR 2 METHODS & FREQ RESPONSE)
-    # =========================================================================
     def create_tab_filtering(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -601,7 +591,7 @@ class MainWindow(QMainWindow):
         t = seg['time'] 
         fs = seg['fs']
         
-        # --- STRATEGI: 3 Separate Canvases (Freq Resp + GL + VL) ---
+        # 3 Separate Canvases (Freq Resp + GL + VL)
         
         # 1. Frequency Response Comparison (Method 1 vs Method 2)
         canvas_freq = MplCanvas(self, width=5, height=4)
@@ -645,7 +635,7 @@ class MainWindow(QMainWindow):
         ax_gl.plot(t, seg['gl_filtered'], color='#4fc3f7', label='Filtered (BPF)')
         ax_gl.set_title(f"Cycle {selected_id} - Gastrocnemius (GL) | Method: {current_method}")
         ax_gl.set_xlabel("Time (s)")
-        ax_gl.set_ylabel("Amplitude (uV)")
+        ax_gl.set_ylabel("Amplitude (mV)")
         ax_gl.legend(loc='upper right')
         canvas_gl.format_legend(ax_gl)
         canvas_gl.style_axis(ax_gl)
@@ -659,16 +649,14 @@ class MainWindow(QMainWindow):
         ax_vl.plot(t, seg['vl_filtered'], color='#ff8a65', label='Filtered (BPF)')
         ax_vl.set_title(f"Cycle {selected_id} - Vastus (VL) | Method: {current_method}")
         ax_vl.set_xlabel("Time (s)")
-        ax_vl.set_ylabel("Amplitude (uV)")
+        ax_vl.set_ylabel("Amplitude (mV)")
         ax_vl.legend(loc='upper right')
         canvas_vl.format_legend(ax_vl)
         canvas_vl.style_axis(ax_vl)
         canvas_vl.fig.tight_layout()
         self.plot_layout_filt.addWidget(canvas_vl)
 
-    # =========================================================================
-    # TAB 4: DENOISING (UPDATED: Window Control)
-    # =========================================================================
+    # TAB 4: DENOISING (Window Control)
     def create_tab_denoising(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -713,7 +701,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(tab, "4. Denoising")
 
     def visualize_windows(self):
-        """Plots all window types on separate canvases."""
         while self.plot_layout_den.count():
             child = self.plot_layout_den.takeAt(0)
             if child.widget():
@@ -726,7 +713,7 @@ class MainWindow(QMainWindow):
         
         window_types = ["Rectangular", "Hanning", "Hamming", "Blackman", "Triangular", "Kaiser"]
         
-        # Create Grid of Plots (2 columns ideally, but VBox for simplicity here)
+        # Create Grid of Plots
         for w_type in window_types:
             window = ModulDenoise.ManualWindow.get_window(w_type, N)
             applied = sine_wave * window
@@ -736,6 +723,7 @@ class MainWindow(QMainWindow):
             ax.plot(window, label='Window Shape', color='cyan')
             ax.plot(applied, label='Applied to Sine', color='yellow', linestyle='--')
             ax.set_title(f"{w_type} Window Visualization")
+            ax.set_ylabel("Amplitude (mV)")
             ax.legend(loc='upper right')
             
             canvas.style_axis(ax)
@@ -769,7 +757,7 @@ class MainWindow(QMainWindow):
         seg = self.segments[selected_id - 1]
         t = seg['time'] 
         
-        # --- STRATEGI: 2 Separate Canvases ---
+        # 2 Separate Canvases
         
         # 1. GL Denoised
         canvas1 = MplCanvas(self, width=5, height=5)
@@ -778,7 +766,7 @@ class MainWindow(QMainWindow):
         ax1.plot(t, seg['gl_denoised'], color='#00e676', label=f'Denoised ({window_type})')
         ax1.set_title(f"Cycle {selected_id} - GL Denoised")
         ax1.set_xlabel("Time (s)")
-        ax1.set_ylabel("Amplitude (uV)")
+        ax1.set_ylabel("Amplitude (mV)")
         ax1.legend(loc='upper right')
         canvas1.format_legend(ax1)
         canvas1.style_axis(ax1)
@@ -792,16 +780,14 @@ class MainWindow(QMainWindow):
         ax2.plot(t, seg['vl_denoised'], color='#00e676', label=f'Denoised ({window_type})')
         ax2.set_title(f"Cycle {selected_id} - VL Denoised")
         ax2.set_xlabel("Time (s)")
-        ax2.set_ylabel("Amplitude (uV)")
+        ax2.set_ylabel("Amplitude (mV)")
         ax2.legend(loc='upper right')
         canvas2.format_legend(ax2)
         canvas2.style_axis(ax2)
         canvas2.fig.tight_layout()
         self.plot_layout_den.addWidget(canvas2)
 
-    # =========================================================================
-    # TAB 5: STFT (Gait Cycle Axis & Control)
-    # =========================================================================
+    # TAB 5: STFT (Gait Cycle Axis)
     def create_tab_stft(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -910,8 +896,7 @@ class MainWindow(QMainWindow):
                 # Using stride=1 to show grid resolution
                 surf = ax.plot_surface(T, F, Z_plot, cmap='viridis', edgecolor='none', rstride=1, cstride=1)
                 cbar = canvas.figure.colorbar(surf, ax=ax, label=lbl, pad=0.1)
-                # --- FIX VIEW ANGLE STFT 3D ---
-                ax.view_init(elev=40, azim=-45) 
+                ax.view_init(elev=40, azim=-45)
             else:
                 # Using pcolormesh with shading='flat'/auto to show grid blocks (pixels)
                 mesh = ax.pcolormesh(t_norm, f, Z_plot, cmap='jet', shading='auto')
@@ -929,9 +914,7 @@ class MainWindow(QMainWindow):
             canvas.fig.tight_layout(pad=3.0, h_pad=5.0)
             self.plot_layout_stft.addWidget(canvas)
 
-    # =========================================================================
     # TAB 6: CWT (Gait Cycle Axis)
-    # =========================================================================
     def create_tab_cwt(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -1018,7 +1001,6 @@ class MainWindow(QMainWindow):
                 T, F = np.meshgrid(t_norm, f)
                 surf = ax.plot_surface(T, F, Z_plot, cmap='plasma', edgecolor='none')
                 cbar = canvas.figure.colorbar(surf, ax=ax, label=lbl, pad=0.1)
-                # FIX VIEW ANGLE CWT 3D
                 ax.view_init(elev=40, azim=-45)
             else:
                 cf = ax.contourf(t_norm, f, Z_plot, levels=50, cmap='plasma')
@@ -1035,58 +1017,56 @@ class MainWindow(QMainWindow):
             canvas.fig.tight_layout(pad=3.0, h_pad=5.0)
             self.plot_layout_cwt.addWidget(canvas)
 
-    # =========================================================================
-    # TAB 7: THRESHOLD (FIXED 3D PLANE & INITIALIZATION)
-    # =========================================================================
+    # TAB 7: THRESHOLD & REPORT (UPDATED with SPLIT LAYOUT)
     def create_tab_threshold(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
         
-        group = QGroupBox("Step 7: Onset/Offset Detection")
-        vlo = QVBoxLayout()
+        # Main Controls Group
+        group_ctrl = QGroupBox("Step 7: Onset/Offset Detection & Reporting")
+        vlo_ctrl = QVBoxLayout()
         
-        # Controls Row 1
         h1 = QHBoxLayout()
-        h1.addWidget(QLabel("Threshold (% of Peak):"))
-        self.spin_th = QDoubleSpinBox()
-        self.spin_th.setRange(0.1, 20.0)
-        self.spin_th.setValue(1.0) 
-        self.spin_th.setSingleStep(0.1)
-        h1.addWidget(self.spin_th)
-        h1.addStretch()
+        h1.addWidget(QLabel("Threshold (% Peak):"))
+        self.spin_th = QDoubleSpinBox(); self.spin_th.setRange(0.1, 20.0); self.spin_th.setValue(1.0); self.spin_th.setSingleStep(0.1)
+        h1.addWidget(self.spin_th); h1.addStretch()
         
-        # Controls Row 2
         h2 = QHBoxLayout()
-        h2.addWidget(QLabel("Visualization Mode:"))
-        self.radio_2d_th = QRadioButton("2D Contour with Threshold")
-        self.radio_3d_th = QRadioButton("3D Surface with Plane")
-        self.radio_2d_th.setChecked(True)
-        bg = QButtonGroup(self)
-        bg.addButton(self.radio_2d_th)
-        bg.addButton(self.radio_3d_th)
-        h2.addWidget(self.radio_2d_th)
-        h2.addWidget(self.radio_3d_th)
-        h2.addStretch()
+        h2.addWidget(QLabel("Mode:"))
+        self.rad_th_2d = QRadioButton("2D + Shading"); self.rad_th_3d = QRadioButton("3D + Plane")
+        self.rad_th_2d.setChecked(True)
+        bg = QButtonGroup(self); bg.addButton(self.rad_th_2d); bg.addButton(self.rad_th_3d)
+        h2.addWidget(self.rad_th_2d); h2.addWidget(self.rad_th_3d); h2.addStretch()
         
-        btn_run = QPushButton("Detect Activations & Visualize")
-        btn_run.clicked.connect(self.process_threshold)
+        btn = QPushButton("Detect & Visualize"); btn.clicked.connect(self.process_threshold)
+        vlo_ctrl.addLayout(h1); vlo_ctrl.addLayout(h2); vlo_ctrl.addWidget(btn)
+        group_ctrl.setLayout(vlo_ctrl)
+        layout.addWidget(group_ctrl)
         
-        vlo.addLayout(h1)
-        vlo.addLayout(h2)
-        vlo.addWidget(btn_run)
-        group.setLayout(vlo)
+        # --- SPLIT VIEW: GRAPHS (Top) | REPORT (Bottom) ---
+        # Changed to Vertical Splitter as per latest request
+        splitter = QSplitter(Qt.Orientation.Vertical)
         
-        content_layout.addWidget(group)
-        self.plot_layout_th = QVBoxLayout()
-        content_layout.addLayout(self.plot_layout_th)
-        content_layout.addStretch()
+        # Top: Scroll Area for Plots
+        scroll_plots = QScrollArea(); scroll_plots.setWidgetResizable(True)
+        content_plots = QWidget(); self.plot_layout_th = QVBoxLayout(content_plots)
+        content_plots.setLayout(self.plot_layout_th)
+        scroll_plots.setWidget(content_plots)
         
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
+        # Bottom: Text Report
+        self.txt_report = QTextEdit()
+        self.txt_report.setReadOnly(True)
+        self.txt_report.setPlaceholderText("Analysis results will appear here...")
+        self.txt_report.setStyleSheet("font-family: Consolas; font-size: 10pt; background-color: #1e1e2e; color: #00e676;")
+        self.txt_report.setMinimumHeight(150) # Ensure minimum height
+        
+        splitter.addWidget(scroll_plots)
+        splitter.addWidget(self.txt_report)
+        # Set stretch factors: Plots get more space (3), Report gets less (1)
+        splitter.setStretchFactor(0, 3) 
+        splitter.setStretchFactor(1, 1)
+        
+        layout.addWidget(splitter)
         self.tabs.addTab(tab, "7. Threshold Detection")
 
     def process_threshold(self):
@@ -1094,139 +1074,142 @@ class MainWindow(QMainWindow):
         if 'cwt_gl' not in self.segments[0]:
             QMessageBox.warning(self, "Warning", "Please run CWT first.")
             return
-            
+        
         th_val = self.spin_th.value() / 100.0
-        self.status_label.setText(f"Detecting Onset/Offset (TH={self.spin_th.value()}%)...")
+        self.status_label.setText(f"Detecting (TH={self.spin_th.value()}%)...")
+        QApplication.processEvents()
         
         processed = []
         for seg in self.segments:
             new_seg = seg.copy(); fs = seg['fs']
             
-            # GL Detection
+            # GL
             prof_gl = ModulThreshold.get_envelope(seg['cwt_gl']['E'])
             acts_gl = ModulThreshold.detect_bursts(prof_gl, fs, threshold_ratio=th_val)
-            res_gl = [{
-                'start_idx': s, 'end_idx': e,
-                'start_t': seg['time'][s], 'end_t': seg['time'][e-1]
-            } for s, e in acts_gl]
-            new_seg['activations_gl'] = res_gl
-            new_seg['energy_profile_gl'] = prof_gl
+            res_gl = [{'start_idx': s, 'end_idx': e, 'start_t': seg['time'][s], 'end_t': seg['time'][e-1] if e<=len(seg['time']) else seg['time'][-1]} for s, e in acts_gl]
+            new_seg['activations_gl'] = res_gl; new_seg['energy_profile_gl'] = prof_gl
             
-            # VL Detection
+            # VL
             prof_vl = ModulThreshold.get_envelope(seg['cwt_vl']['E'])
             acts_vl = ModulThreshold.detect_bursts(prof_vl, fs, threshold_ratio=th_val)
-            res_vl = [{
-                'start_idx': s, 'end_idx': e,
-                'start_t': seg['time'][s], 'end_t': seg['time'][e-1]
-            } for s, e in acts_vl]
-            new_seg['activations_vl'] = res_vl
-            new_seg['energy_profile_vl'] = prof_vl
+            res_vl = [{'start_idx': s, 'end_idx': e, 'start_t': seg['time'][s], 'end_t': seg['time'][e-1] if e<=len(seg['time']) else seg['time'][-1]} for s, e in acts_vl]
+            new_seg['activations_vl'] = res_vl; new_seg['energy_profile_vl'] = prof_vl
             
             processed.append(new_seg)
             
         self.segments = processed
         self.status_label.setText("Detection Complete.")
         self.plot_threshold_ui()
+        
+        sel = self.spin_cycle.value()
+        current_seg = self.segments[sel-1]
+        report_text = Result_Reporting.generate_cycle_report(current_seg)
+        self.txt_report.setText(report_text)
 
     def plot_threshold_ui(self):
-        while self.plot_layout_th.count():
-            child = self.plot_layout_th.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-            
-        sel = self.spin_cycle.value() if self.segments else 1
-        seg = self.segments[sel - 1]
-        th_pct = self.spin_th.value()
-        is_3d = self.radio_3d_th.isChecked()
+        while self.plot_layout_th.count(): self.plot_layout_th.takeAt(0).widget().deleteLater()
+        
+        sel = self.spin_cycle.value() if self.segments else 1; seg = self.segments[sel-1]
+        th_pct = self.spin_th.value(); is_3d = self.rad_th_3d.isChecked()
         
         for muscle in ['GL', 'VL']:
-            canvas = MplCanvas(self, width=5, height=6, is_3d=is_3d)
-            ax = canvas.axes
+            # 2 Separate Canvases per muscle (Top=CWT, Bottom=Binary)
             
-            cwt_data = seg[f'cwt_{muscle.lower()}']
-            f, t, E = cwt_data['f'], cwt_data['t'], cwt_data['E']
+            # Canvas A: CWT (Top)
+            canvas_cwt = MplCanvas(self, width=5, height=5, is_3d=is_3d)
+            ax_cwt = canvas_cwt.axes
             
-            # Normalize to 0-100% Gait Cycle
+            d = seg[f'cwt_{muscle.lower()}']
+            f, t, E = d['f'], d['t'], d['E']
+            
             if len(t) > 1:
-                t_norm = (t - t[0]) / (t[-1] - t[0]) * 100
+                tn = (t - t[0]) / (t[-1] - t[0]) * 100
             else:
-                t_norm = t
-            
-            Z_plot = E # Linear Energy for threshold visual
-            peak_E = np.max(E)
-            th_visual = (th_pct / 100.0) * peak_E
+                tn = t
+                
+            peak = np.max(E)
+            th_val = (th_pct / 100.0) * peak
             
             if is_3d:
-                T, F = np.meshgrid(t_norm, f)
-                surf = ax.plot_surface(T, F, Z_plot, cmap='magma', edgecolor='none', alpha=0.9)
+                T, F = np.meshgrid(tn, f)
+                surf = canvas_cwt.axes.plot_surface(T, F, E, cmap='magma', alpha=0.9)
                 
-                # --- VISUALIZE 3D THRESHOLD PLANE (FIXED) ---
-                # Initialize plane variables explicitly
-                # Create 4 corner points for the plane
-                x_corners = np.array([0, 100, 0, 100])
-                y_corners = np.array([f[0], f[0], f[-1], f[-1]])
-                z_corners = np.array([th_visual, th_visual, th_visual, th_visual])
+                # Plane
+                xp, yp = np.meshgrid([0, 100], [f[0], f[-1]])
+                zp = np.full_like(xp, th_val)
+                canvas_cwt.axes.plot_surface(xp, yp, zp, color='cyan', alpha=0.3)
+                canvas_cwt.axes.view_init(30, -45)
                 
-                # Reshape for plot_surface (2x2 grid)
-                X_plane = x_corners.reshape((2, 2))
-                Y_plane = y_corners.reshape((2, 2))
-                Z_plane = z_corners.reshape((2, 2))
+                # Add Colorbar
+                cbar = canvas_cwt.figure.colorbar(surf, ax=ax_cwt, label="Energy Density", pad=0.1)
+                canvas_cwt.format_colorbar(cbar)
+            else:
+                cf = ax_cwt.contourf(tn, f, E, 50, cmap='magma')
                 
-                # Plot Plane (Cyan, Transparent)
-                ax.plot_surface(X_plane, Y_plane, Z_plane, color='cyan', alpha=0.4, shade=False)
-                
-                cbar = canvas.figure.colorbar(surf, ax=ax, label="Energy Density", pad=0.1)
-                # View angle to see the plane cutting the hill
-                ax.view_init(elev=20, azim=-30)
-                
-            else: # 2D Contour
-                cf = ax.contourf(t_norm, f, Z_plot, levels=50, cmap='magma')
-                cbar = canvas.figure.colorbar(cf, ax=ax, label="Energy Density")
-                
-                activations = seg[f'activations_{muscle.lower()}']
-                for act in activations:
-                    start_norm = (act['start_t'] - t[0])/(t[-1]-t[0])*100
-                    end_norm = (act['end_t'] - t[0])/(t[-1]-t[0])*100
-                    # Shading Active Area
-                    ax.axvspan(start_norm, end_norm, color='cyan', alpha=0.2, hatch='///')
-                    ax.axvline(start_norm, color='cyan', linestyle='--', linewidth=1)
-                    ax.axvline(end_norm, color='cyan', linestyle='--', linewidth=1)
-
-            canvas.style_axis(ax, is_3d)
-            canvas.format_colorbar(cbar)
+                # Overlay Shading on CWT
+                acts = seg[f'activations_{muscle.lower()}']
+                for a in acts:
+                    # Convert Abs time back to % for visualization
+                    if len(t) > 1:
+                        s = (a['start_t'] - t[0]) / (t[-1] - t[0]) * 100
+                        e = (a['end_t'] - t[0]) / (t[-1] - t[0]) * 100
+                    else:
+                        s, e = 0, 100
+                    ax_cwt.axvspan(s, e, color='cyan', alpha=0.2, hatch='//')
+                    
+                # Add Colorbar
+                cbar = canvas_cwt.figure.colorbar(cf, ax=ax_cwt, label="Energy Density")
+                canvas_cwt.format_colorbar(cbar)
             
-            ax.set_title(f"Detection {muscle} - Cycle {sel} (Cyan = Threshold)")
-            ax.set_xlabel("% Gait Cycle")
-            ax.set_ylabel("Freq (Hz)")
-            ax.set_xlim(0, 100)
+            ax_cwt.set_title(f"{muscle} CWT & Threshold Plane")
+            ax_cwt.set_ylabel("Freq (Hz)")
+            if not is_3d: ax_cwt.set_xlabel("% Gait Cycle")
+                
+            canvas_cwt.style_axis(ax_cwt, is_3d)
+            canvas_cwt.fig.tight_layout()
+            self.plot_layout_th.addWidget(canvas_cwt)
             
-            canvas.fig.tight_layout(pad=3.0, h_pad=5.0)
-            self.plot_layout_th.addWidget(canvas)
+            # Canvas B: Binary Square Wave (Bottom)
+            canvas_bin = MplCanvas(self, width=5, height=3, is_3d=False)
+            ax_bin = canvas_bin.axes
+            
+            # Construct Binary Signal (0 or 1)
+            y_binary = np.zeros_like(tn)
+            acts = seg[f'activations_{muscle.lower()}']
+            
+            # Map indices from activations to the binary array
+            for a in acts:
+                s_idx = a['start_idx']
+                e_idx = a['end_idx']
+                # Ensure indices are within bounds
+                s_idx = max(0, min(s_idx, len(y_binary)-1))
+                e_idx = max(0, min(e_idx, len(y_binary)))
+                y_binary[s_idx:e_idx] = 1
+            
+            # Plot Step Function
+            ax_bin.plot(tn, y_binary, color='cyan', label='Activation Status', linewidth=2)
+            ax_bin.fill_between(tn, 0, y_binary, color='cyan', alpha=0.3)
+            
+            ax_bin.set_title(f"{muscle} Activation (Binary)")
+            ax_bin.set_xlabel("% Gait Cycle")
+            ax_bin.set_ylabel("State (0/1)")
+            ax_bin.set_xlim(0, 100)
+            ax_bin.set_ylim(-0.2, 1.2)
+            ax_bin.set_yticks([0, 1])
+            ax_bin.set_yticklabels(['Inactive', 'Active'])
+            
+            canvas_bin.style_axis(ax_bin)
+            canvas_bin.fig.tight_layout()
+            self.plot_layout_th.addWidget(canvas_bin)
 
     def clear_all_data(self):
-        reply = QMessageBox.question(self, 'Confirmation', 
-                                     "Are you sure you want to clear all data?",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(self, 'Confirmation', "Clear all data?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
-            self.raw_data = None
-            self.segments = None
-            self.spin_cycle.setEnabled(False)
-            self.spin_cycle.setValue(1)
-            
-            for layout in [self.plot_layout_raw, self.plot_layout_seg, self.plot_layout_filt,
-                           self.plot_layout_den, self.plot_layout_stft, self.plot_layout_cwt,
-                           self.plot_layout_th]:
-                while layout.count():
-                    child = layout.takeAt(0)
-                    if child.widget():
-                        child.widget().deleteLater()
-            
-            self.status_label.setText("All data cleared.")
-            self.tabs.setCurrentIndex(0)
+            self.raw_data = None; self.segments = None; self.spin_cycle.setEnabled(False); self.spin_cycle.setValue(1)
+            for layout in [self.plot_layout_raw, self.plot_layout_seg, self.plot_layout_filt, self.plot_layout_den, self.plot_layout_stft, self.plot_layout_cwt, self.plot_layout_th]:
+                while layout.count(): layout.takeAt(0).widget().deleteLater()
+            self.txt_report.clear()
+            self.status_label.setText("Cleared.")
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion") 
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    app = QApplication(sys.argv); app.setStyle("Fusion"); window = MainWindow(); window.show(); sys.exit(app.exec())

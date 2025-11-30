@@ -3,8 +3,6 @@ import matplotlib.pyplot as plt
 
 def detect_events_manual(fs_signal, fs, min_dist_sec=0.4):
     """
-    Manually detects Heel Strike (HS) and Toe Off (TO) events.
-    
     Logic:
     1. Dynamic Thresholding (average of min and max).
     2. Binarization (High/Low state).
@@ -21,11 +19,11 @@ def detect_events_manual(fs_signal, fs, min_dist_sec=0.4):
     
     # 2. Binarization
     # Assumption: High Value = Stance (Contact), Low Value = Swing
-    # We cast boolean result to int (0 or 1)
+    # Cast boolean result to int (0 or 1)
     binary_signal = (np.abs(fs_signal) > np.abs(threshold)).astype(int)
     
     # 3. Edge Detection
-    # np.diff calculates out[i] = a[i+1] - a[i]
+    # Calculates out[i] = a[i+1] - a[i]
     # +1 indicates 0 -> 1 transition (Rising Edge / Heel Strike)
     # -1 indicates 1 -> 0 transition (Falling Edge / Toe Off)
     edges = np.diff(binary_signal)
@@ -51,9 +49,6 @@ def detect_events_manual(fs_signal, fs, min_dist_sec=0.4):
     return clean_hs, clean_to
 
 def segment_data(data_dict):
-    """
-    Segments data into individual cycles (Heel Strike to Heel Strike).
-    """
     if data_dict is None:
         print("[!] Data is empty.")
         return []
@@ -86,7 +81,7 @@ def segment_data(data_dict):
                 'cycle_id': i + 1,
                 'start_idx': start_idx,
                 'end_idx': end_idx,
-                'to_idx': current_to_idx, # Global Index (Important for absolute plots)
+                'to_idx': current_to_idx, # Global Index
                 
                 # Sliced signals
                 'time': data_dict['time'][start_idx:end_idx],
@@ -110,9 +105,7 @@ def segment_data(data_dict):
     return segments
 
 def plot_segmentation(data_dict, segments):
-    """
-    Visualizes Full Segmentation (For standalone testing).
-    """
+    # Visualizes Full Segmentation (For standalone testing)
     if not segments: return
 
     time = data_dict['time']
@@ -134,11 +127,11 @@ def plot_segmentation(data_dict, segments):
     ax.set_facecolor('#1e1e2e')
     plt.show()
 
-# --- Block for standalone testing ---
+# <<<< Standalone testing >>>>
 if __name__ == "__main__":
     try:
         import Load_and_Plot_Raw_Data as Loader
-        # Change this string to match your local file name if testing directly
+        # Change this string to match local file name if testing directly
         data = Loader.load_raw_data("S01")
         if data:
             gait_cycles = segment_data(data)

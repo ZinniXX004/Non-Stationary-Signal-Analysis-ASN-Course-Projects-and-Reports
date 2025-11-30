@@ -1,8 +1,8 @@
 import sys
 import os
 
-# Menangani High DPI Scaling (Penting agar GUI tidak buram di layar modern/Retina/4K)
-# Harus dilakukan sebelum mengimport QApplication
+# Handle High DPI Scaling (Important to prevent blurry GUI on modern/Retina/4K screens)
+# Must be done before importing QApplication
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
 
 try:
@@ -10,47 +10,43 @@ try:
     from PyQt6.QtCore import Qt
     from GUI import MainWindow
 except ImportError as e:
-    print("CRITICAL ERROR: Gagal memuat library yang dibutuhkan.")
-    print(f"Detail Error: {e}")
-    print("Pastikan Anda telah menginstall: PyQt6, numpy, matplotlib, wfdb")
-    print("Pastikan juga file: GUI.py dan modul lainnya berada dalam satu folder.")
+    print("CRITICAL ERROR: Failed to load required libraries")
+    print(f"Error Details: {e}")
+    print("Make sure you have installed: PyQt6, numpy, matplotlib, wfdb")
+    print("Also make sure the GUI.py file and other modules are in the same folder")
     sys.exit(1)
 
 def main():
-    """
-    Fungsi utama untuk menjalankan aplikasi ASN EMG Analysis.
-    """
     print("=======================================================")
     print("   ASN - EMG Movement Signal Analysis (Physionet)      ")
     print("   Based on Wavelet-Based Assessment Method            ")
     print("=======================================================")
     print("[-] Initializing Application...")
 
-    # 1. Membuat Instance Aplikasi
+    # 1. Creating Application Instance
     app = QApplication(sys.argv)
     
-    # 2. Konfigurasi Style
-    # Menggunakan 'Fusion' sebagai base style karena paling konsisten lintas OS (Windows/Mac/Linux)
-    # sebelum kita menimpanya dengan Stylesheet ungu gelap di GUI.py
+    # 2. Style Configuration
+    # Using 'Fusion' as the base style because it's the most consistent across OSes (Windows/Mac/Linux)
+    # before override it with the dark purple Stylesheet in GUI.py
     app.setStyle("Fusion")
 
-    # 3. Konfigurasi Atribut Aplikasi (High DPI Support)
+    # 3. Application Attribute Configuration (High DPI Support)
     if hasattr(Qt.ApplicationAttribute, 'AA_UseHighDpiPixmaps'):
         app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
 
-    # 4. Memuat Jendela Utama
+    # 4. Load Main Window
     try:
         window = MainWindow()
-        # Tampilkan secara Maximized agar grafik terlihat jelas dan besar
         window.showMaximized() 
         print("[-] Application Started Successfully.")
     except Exception as e:
-        print(f"[!] Error saat inisialisasi GUI: {e}")
+        print(f"[!] Error when GUI Initialization: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
 
-    # 5. Menjalankan Event Loop (Infinite Loop sampai user menutup aplikasi)
+    # 5. Running event loop
     sys.exit(app.exec())
 
 if __name__ == "__main__":

@@ -4,12 +4,9 @@ from mpl_toolkits.mplot3d import Axes3D
 
 class ManualCWT:
     """
-    Manual Implementation of Continuous Wavelet Transform (CWT).
-    
     Features:
-    1. Supports 'Morlet' (Analytical) and 'db4' (Numerical Approximation) wavelets.
-    2. Uses direct convolution (time-domain) instead of FFT-based convolution.
-    3. Fully manual generation of wavelet shapes without 'pywt'.
+    1. Supports 'Morlet' (Analytical) and 'db4' (Numerical Approximation) wavelets
+    2. Uses direct convolution (time-domain) instead of FFT-based convolution
     """
     def __init__(self, fs, f_min=20, f_max=450, num_scales=64, wavelet_type='morlet'):
         self.fs = fs
@@ -39,8 +36,6 @@ class ManualCWT:
 
     def _morlet_wavelet(self, scale):
         """
-        Generates the Complex Morlet Wavelet for a specific scale.
-        
         Analytical Formula:
         psi(t) = C * exp(i * w0 * t) * exp(-t^2 / 2)
         
@@ -49,7 +44,7 @@ class ManualCWT:
         w0 = 6 (Wavenumber, standard for CWT to satisfy admissibility condition)
         """
         # Define effective time support [-5 sigma, +5 sigma]
-        # The wavelet is scaled by dividing t by 'scale'.
+        # The wavelet is scaled by dividing t by 'scale'
         M = int(scale * 10) 
         if M % 2 == 0: M += 1 # Ensure odd length for symmetry
         
@@ -70,9 +65,9 @@ class ManualCWT:
 
     def _generate_db4_prototype(self, iterations=6):
         """
-        Generates the Daubechies 4 (db4) wavelet shape using the Cascade Algorithm.
+        Generates the db4s wavelet shape using the Cascade Algorithm
         Since db4 has no closed-form equation, we iteratively upscale and convolve
-        the filter coefficients to approximate the continuous function.
+        the filter coefficients to approximate the continuous function
         """
         # Daubechies 4 Decomposition Coefficients (derived analytically)
         h0 = (1 + np.sqrt(3)) / (4 * np.sqrt(2))
@@ -103,9 +98,6 @@ class ManualCWT:
         return psi
 
     def _db4_wavelet(self, scale):
-        """
-        Generates the db4 wavelet for a specific scale by Resampling (Interpolation).
-        """
         prototype = self.db4_prototype
         len_proto = len(prototype)
         
@@ -125,10 +117,8 @@ class ManualCWT:
 
     def compute(self, signal):
         """
-        Computes CWT Coefficients and Energy Density.
-        
         Method:
-        Direct convolution of the signal with the scaled wavelet for each scale.
+        Direct convolution of the signal with the scaled wavelet for each scales
         
         Returns:
             energy_density: |CWT|^2 (Matrix: Scales x Time)
@@ -160,9 +150,6 @@ class ManualCWT:
         return energy_density, self.freqs
 
 def compute_cwt_for_segments(segments, wavelet_type='morlet'):
-    """
-    Wrapper function to process a list of EMG segments.
-    """
     if not segments: return []
     
     # Get sampling frequency
@@ -205,10 +192,6 @@ def compute_cwt_for_segments(segments, wavelet_type='morlet'):
     return processed_segments
 
 def plot_cwt(segments, cycle_idx=0, muscle='GL', use_db=False, mode='2D'):
-    """
-    Visualization Function for CWT Scalogram.
-    X-Axis is normalized to % Gait Cycle (0-100%).
-    """
     if not segments: return
     
     seg = segments[cycle_idx]
@@ -223,7 +206,7 @@ def plot_cwt(segments, cycle_idx=0, muscle='GL', use_db=False, mode='2D'):
     t = data['t']
     E = data['E'] # Energy Density |W|^2
     
-    # --- NORMALIZE TIME TO % GAIT CYCLE ---
+    # Normalize time to % gait cycle
     # Map t[start] to 0% and t[end] to 100%
     if len(t) > 1:
         t_norm = (t - t[0]) / (t[-1] - t[0]) * 100
@@ -278,7 +261,7 @@ def plot_cwt(segments, cycle_idx=0, muscle='GL', use_db=False, mode='2D'):
     plt.tight_layout()
     plt.show()
 
-# --- Standalone Testing Block ---
+# <<<< Standalone Testing Block >>>>
 if __name__ == "__main__":
     # Generate Dummy Burst Signal (Simulating Muscle Activation)
     fs_test = 2000
