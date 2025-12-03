@@ -1,4 +1,3 @@
-# main_GUI.py
 # Dependencies: PyQt6, matplotlib, numpy, pandas
 
 import sys, os, math, bisect
@@ -14,7 +13,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
 import pandas as pd
-from PPG_main_fixed import PPGProcessor
+from ppg_emd_main import PPGProcessor
 
 # USER CUSTOM FUNCTIONS (SPLINE & EXTREMA)
 def tambah_titik_ujung(indices, values):
