@@ -1,12 +1,12 @@
 @echo off
 setlocal EnableDelayedExpansion
-title ASN - EMG Analysis System Validator
+title ASN - EMG Analysis System Validator V3
 color 0B
 
 :: ==============================================================================
-::  ASN - MOVEMENT SIGNAL ANALYSIS PIPELINE VALIDATOR
+::  ASN - MOVEMENT SIGNAL ANALYSIS PIPELINE VALIDATOR (V3)
 ::  Platform: Windows 11
-::  Description: Automated health check, syntax verification, and unit testing.
+::  Fixes: Escaped parentheses in echo statements inside IF blocks.
 :: ==============================================================================
 
 :: --- 1. INITIALIZATION & LOGGING ---
@@ -17,34 +17,26 @@ echo  ASN SYSTEM CHECK LOG - %DATE% %TIME% >> "%LOGFILE%"
 echo ============================================================================== >> "%LOGFILE%"
 
 echo.
-echo  [SYSTEM] Initializing Validation Pipeline...
+echo  [SYSTEM] Initializing Validation Pipeline V3...
 echo  [SYSTEM] Logs will be saved to: %LOGFILE%
 echo.
 
-:: --- 2. DEPENDENCY CHECK (LIBRARIES) ---
+:: --- 2. DEPENDENCY CHECK ---
 echo  ------------------------------------------------------------------------------
 echo   PHASE 1: CHECKING DEPENDENCIES
 echo  ------------------------------------------------------------------------------
 echo.
 
 set "MISSING_LIBS=0"
-for %%L in (numpy matplotlib PyQt6 wfdb) do (
-    <nul set /p="  > Checking %%L... "
-    python -c "import %%L" 2>nul
-    if !errorlevel! equ 0 (
-        echo [OK]
-        echo [PASS] Library '%%L' found. >> "%LOGFILE%"
-    ) else (
-        echo [MISSING]
-        echo [FAIL] Library '%%L' is MISSING or corrupted. >> "%LOGFILE%"
-        set /a MISSING_LIBS+=1
-    )
-)
+call :CHECK_LIB numpy
+call :CHECK_LIB matplotlib
+call :CHECK_LIB PyQt6
+call :CHECK_LIB wfdb
 
-if %MISSING_LIBS% gtr 0 (
+if !MISSING_LIBS! gtr 0 (
     echo.
-    echo  [CRITICAL] Some dependencies are missing. Please run: pip install [library_name]
-    echo  [SYSTEM] Aborting process.
+    echo  [CRITICAL] Dependencies missing. Check log.
+    echo  [SYSTEM] Aborting.
     pause
     exit /b 1
 ) else (
@@ -52,24 +44,28 @@ if %MISSING_LIBS% gtr 0 (
     echo  [SUCCESS] All dependencies are installed.
 )
 
-:: --- 3. DATASET AVAILABILITY CHECK ---
+:: --- 3. DATASET AVAILABILITY CHECK (S01 - S31) ---
 echo.
 echo  ------------------------------------------------------------------------------
-echo   PHASE 2: CHECKING DATASET (S01)
+echo   PHASE 2: CHECKING DATASETS (S01 to S31)
 echo  ------------------------------------------------------------------------------
+echo   Checking for .hea and .dat files...
 echo.
 
-if exist "S01.hea" (
-    if exist "S01.dat" (
-        echo   > Dataset S01 (Header/Dat) found. [OK]
-        echo [PASS] Dataset S01 found. >> "%LOGFILE%"
-    ) else (
-        echo   > S01.dat is missing! [FAIL]
-        echo [FAIL] S01.dat is missing. >> "%LOGFILE%"
-    )
+set "MISSING_DATA=0"
+set "FOUND_COUNT=0"
+
+:: Loop from 1 to 31
+for /L %%i in (1,1,31) do (
+    call :CHECK_DATASET %%i
+)
+
+echo.
+echo  [INFO] Total Valid Datasets Found: !FOUND_COUNT!
+if !MISSING_DATA! gtr 0 (
+    echo  [WARNING] !MISSING_DATA! datasets were incomplete or missing (See Log).
 ) else (
-    echo   > S01.hea is missing! [FAIL]
-    echo [FAIL] S01.hea is missing. >> "%LOGFILE%"
+    echo  [SUCCESS] All 31 datasets are present.
 )
 
 :: --- 4. SCRIPT ANALYSIS PIPELINE ---
@@ -80,58 +76,24 @@ echo  --------------------------------------------------------------------------
 echo   NOTE: For GUI scripts, please CLOSE the window manually to proceed.
 echo.
 
-:: List of scripts in logical order
-set "SCRIPTS=Load_and_Plot_Raw_Data.py Segmentation_Foot_Switch.py Filtering_BPF.py Denoising_DWT_EMG.py STFT_EMG.py CWT_EMG.py Threshold.py Result_Reporting.py GUI.py main.py"
-
-set "ERRORS=0"
-
-for %%S in (%SCRIPTS%) do (
-    echo.
-    echo   ----------------------------------------
-    echo   TARGET: %%S
-    echo   ----------------------------------------
-    
-    if exist "%%S" (
-        :: A. Syntax Check
-        <nul set /p="  > Syntax Check... "
-        python -m py_compile "%%S" 2>> "%LOGFILE%"
-        if !errorlevel! equ 0 (
-            echo [OK]
-            
-            :: B. Runtime Simulation (Unit Test)
-            echo     Executing Unit Test...
-            echo     [OUTPUT START] >> "%LOGFILE%"
-            echo     Target: %%S >> "%LOGFILE%"
-            
-            :: Capture output to log, but show error level status on screen
-            python "%%S" >> "%LOGFILE%" 2>&1
-            
-            if !errorlevel! equ 0 (
-                echo     > Runtime Status: [SUCCESS]
-                echo     [OUTPUT END] Status: SUCCESS >> "%LOGFILE%"
-            ) else (
-                echo     > Runtime Status: [FAILURE] - Check Log!
-                echo     [OUTPUT END] Status: FAILURE (Error Code: !errorlevel!) >> "%LOGFILE%"
-                set /a ERRORS+=1
-            )
-        ) else (
-            echo [SYNTAX ERROR]
-            echo [FAIL] Syntax error in %%S >> "%LOGFILE%"
-            set /a ERRORS+=1
-        )
-    ) else (
-        echo   [FILE NOT FOUND]
-        echo [FAIL] File %%S not found in directory. >> "%LOGFILE%"
-        set /a ERRORS+=1
-    )
-)
+set "SCRIPT_ERRORS=0"
+call :TEST_SCRIPT Load_and_Plot_Raw_Data.py
+call :TEST_SCRIPT Segmentation_Foot_Switch.py
+call :TEST_SCRIPT Filtering_BPF.py
+call :TEST_SCRIPT Denoising_DWT_EMG.py
+call :TEST_SCRIPT STFT_EMG.py
+call :TEST_SCRIPT CWT_EMG.py
+call :TEST_SCRIPT Threshold.py
+call :TEST_SCRIPT Result_Reporting.py
+call :TEST_SCRIPT GUI.py
+call :TEST_SCRIPT main.py
 
 :: --- 5. FINAL SUMMARY ---
 echo.
 echo ==============================================================================
 echo  FINAL DIAGNOSTIC REPORT
 echo ==============================================================================
-if %ERRORS% equ 0 (
+if !SCRIPT_ERRORS! equ 0 (
     color 0A
     echo  STATUS: SYSTEM HEALTHY
     echo  All scripts passed syntax and logic checks.
@@ -139,10 +101,103 @@ if %ERRORS% equ 0 (
 ) else (
     color 0C
     echo  STATUS: ISSUES DETECTED
-    echo  Total Errors Found: %ERRORS%
-    echo  Please review "System_Check_Log.txt" for specific error tracebacks.
+    echo  Total Script Errors: !SCRIPT_ERRORS!
+    echo  Please review "System_Check_Log.txt".
 )
 
 echo.
 echo  Press any key to exit...
 pause >nul
+goto :EOF
+
+:: ==============================================================================
+::  SUBROUTINES (FUNCTIONS)
+:: ==============================================================================
+
+:CHECK_LIB
+:: Usage: call :CHECK_LIB [LibraryName]
+<nul set /p="  > Checking %1... "
+python -c "import %1" 2>nul
+if %errorlevel% equ 0 (
+    echo [OK]
+    echo [PASS] Library '%1' found. >> "%LOGFILE%"
+) else (
+    echo [MISSING]
+    echo [FAIL] Library '%1' is MISSING. >> "%LOGFILE%"
+    set /a MISSING_LIBS+=1
+)
+goto :EOF
+
+:CHECK_DATASET
+:: Usage: call :CHECK_DATASET [Number]
+set "NUM=%1"
+:: Handle padding logic manually for S01-S09 vs S10-S31 if needed
+:: But Physionet sometimes uses S01 or S1. We check both possibilities.
+set "FILE_A=S%NUM%"
+if %NUM% lss 10 (set "FILE_B=S0%NUM%") else (set "FILE_B=S%NUM%")
+
+if exist "%FILE_A%.hea" (
+    set "TARGET=%FILE_A%"
+) else if exist "%FILE_B%.hea" (
+    set "TARGET=%FILE_B%"
+) else (
+    :: Not found in either format
+    echo [FAIL] Dataset S%NUM% missing. >> "%LOGFILE%"
+    set /a MISSING_DATA+=1
+    goto :EOF
+)
+
+:: If header exists, check dat
+if exist "%TARGET%.dat" (
+    echo   > Found: %TARGET%
+    :: FIX: Escaped parenthesis with ^( and ^)
+    echo [PASS] Dataset %TARGET% ^(Header/Dat^) found. >> "%LOGFILE%"
+    set /a FOUND_COUNT+=1
+) else (
+    echo   > Found Header %TARGET% but MISSING .dat!
+    echo [FAIL] Dataset %TARGET% missing .dat file. >> "%LOGFILE%"
+    set /a MISSING_DATA+=1
+)
+goto :EOF
+
+:TEST_SCRIPT
+:: Usage: call :TEST_SCRIPT [ScriptName]
+set "S_NAME=%1"
+echo.
+echo   ----------------------------------------
+echo   TARGET: %S_NAME%
+echo   ----------------------------------------
+
+if not exist "%S_NAME%" (
+    echo   [FILE NOT FOUND]
+    echo [FAIL] File %S_NAME% not found. >> "%LOGFILE%"
+    set /a SCRIPT_ERRORS+=1
+    goto :EOF
+)
+
+:: A. Syntax Check
+<nul set /p="  > Syntax Check... "
+python -m py_compile "%S_NAME%" 2>> "%LOGFILE%"
+if %errorlevel% equ 0 (
+    echo [OK]
+    
+    :: B. Runtime Simulation
+    echo     Executing Unit Test...
+    echo     [OUTPUT START: %S_NAME%] >> "%LOGFILE%"
+    
+    python "%S_NAME%" >> "%LOGFILE%" 2>&1
+    
+    if !errorlevel! equ 0 (
+        echo     > Runtime Status: [SUCCESS]
+        echo     [OUTPUT END: %S_NAME%] Status: SUCCESS >> "%LOGFILE%"
+    ) else (
+        echo     > Runtime Status: [FAILURE] - Check Log!
+        echo     [OUTPUT END: %S_NAME%] Status: FAILURE (Code: !errorlevel!) >> "%LOGFILE%"
+        set /a SCRIPT_ERRORS+=1
+    )
+) else (
+    echo [SYNTAX ERROR]
+    echo [FAIL] Syntax error in %S_NAME%. >> "%LOGFILE%"
+    set /a SCRIPT_ERRORS+=1
+)
+goto :EOF
