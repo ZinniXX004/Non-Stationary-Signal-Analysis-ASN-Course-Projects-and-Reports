@@ -1,12 +1,12 @@
 @echo off
 setlocal EnableDelayedExpansion
-title ASN - EMG Analysis System Validator V4
+title ASN - EMG Analysis System Validator V5 (Stable)
 color 0B
 
 :: ==============================================================================
-::  ASN - MOVEMENT SIGNAL ANALYSIS PIPELINE VALIDATOR (V4)
+::  ASN - MOVEMENT SIGNAL ANALYSIS PIPELINE VALIDATOR
 ::  Platform: Windows 11
-::  Fixes: Fully escaped parentheses in all IF/ELSE blocks.
+::  Flattened logic using GOTO to eliminate False Positives.
 :: ==============================================================================
 
 :: --- 1. INITIALIZATION & LOGGING ---
@@ -17,7 +17,7 @@ echo  ASN SYSTEM CHECK LOG - %DATE% %TIME% >> "%LOGFILE%"
 echo ============================================================================== >> "%LOGFILE%"
 
 echo.
-echo  [SYSTEM] Initializing Validation Pipeline V4...
+echo  [SYSTEM] Initializing Validation Pipeline V5...
 echo  [SYSTEM] Logs will be saved to: %LOGFILE%
 echo.
 
@@ -63,7 +63,6 @@ for /L %%i in (1,1,31) do (
 echo.
 echo  [INFO] Total Valid Datasets Found: !FOUND_COUNT!
 if !MISSING_DATA! gtr 0 (
-    :: FIX V4: Escaped parentheses here ^(See Log^)
     echo  [WARNING] !MISSING_DATA! datasets were incomplete or missing ^(See Log^).
 ) else (
     echo  [SUCCESS] All 31 datasets are present.
@@ -78,6 +77,8 @@ echo   NOTE: For GUI scripts, please CLOSE the window manually to proceed.
 echo.
 
 set "SCRIPT_ERRORS=0"
+
+:: Execute tests sequentially
 call :TEST_SCRIPT Load_and_Plot_Raw_Data.py
 call :TEST_SCRIPT Segmentation_Foot_Switch.py
 call :TEST_SCRIPT Filtering_BPF.py
@@ -140,13 +141,11 @@ if exist "%FILE_A%.hea" (
 ) else if exist "%FILE_B%.hea" (
     set "TARGET=%FILE_B%"
 ) else (
-    :: Not found in either format
     echo [FAIL] Dataset S%NUM% missing. >> "%LOGFILE%"
     set /a MISSING_DATA+=1
     goto :EOF
 )
 
-:: If header exists, check dat
 if exist "%TARGET%.dat" (
     echo   > Found: %TARGET%
     echo [PASS] Dataset %TARGET% ^(Header/Dat^) found. >> "%LOGFILE%"
@@ -173,29 +172,42 @@ if not exist "%S_NAME%" (
     goto :EOF
 )
 
-:: A. Syntax Check
+:: --- A. SYNTAX CHECK ---
 <nul set /p="  > Syntax Check... "
+:: Reset error level
+ver > nul
 python -m py_compile "%S_NAME%" 2>> "%LOGFILE%"
-if %errorlevel% equ 0 (
-    echo [OK]
-    
-    :: B. Runtime Simulation
-    echo     Executing Unit Test...
-    echo     [OUTPUT START: %S_NAME%] >> "%LOGFILE%"
-    
-    python "%S_NAME%" >> "%LOGFILE%" 2>&1
-    
-    if !errorlevel! equ 0 (
-        echo     > Runtime Status: [SUCCESS]
-        echo     [OUTPUT END: %S_NAME%] Status: SUCCESS >> "%LOGFILE%"
-    ) else (
-        echo     > Runtime Status: [FAILURE] - Check Log!
-        echo     [OUTPUT END: %S_NAME%] Status: FAILURE (Code: !errorlevel!) >> "%LOGFILE%"
-        set /a SCRIPT_ERRORS+=1
-    )
-) else (
-    echo [SYNTAX ERROR]
-    echo [FAIL] Syntax error in %S_NAME%. >> "%LOGFILE%"
-    set /a SCRIPT_ERRORS+=1
-)
+
+:: Check Syntax Result using GOTO to avoid nested IF issues
+if %errorlevel% neq 0 goto :SYNTAX_FAIL
+
+echo [OK]
+
+:: --- B. RUNTIME SIMULATION ---
+echo     Executing Unit Test...
+echo     [OUTPUT START: %S_NAME%] >> "%LOGFILE%"
+
+:: Reset error level
+ver > nul
+python "%S_NAME%" >> "%LOGFILE%" 2>&1
+
+:: Check Runtime Result
+if %errorlevel% neq 0 goto :RUNTIME_FAIL
+
+:: --- SUCCESS CASE ---
+echo     > Runtime Status: [SUCCESS]
+echo     [OUTPUT END: %S_NAME%] Status: SUCCESS >> "%LOGFILE%"
+goto :EOF
+
+:: --- FAILURE HANDLERS ---
+:SYNTAX_FAIL
+echo [SYNTAX ERROR]
+echo [FAIL] Syntax error in %S_NAME%. >> "%LOGFILE%"
+set /a SCRIPT_ERRORS+=1
+goto :EOF
+
+:RUNTIME_FAIL
+echo     > Runtime Status: [FAILURE] - Check Log!
+echo     [OUTPUT END: %S_NAME%] Status: FAILURE (Code: !errorlevel!) >> "%LOGFILE%"
+set /a SCRIPT_ERRORS+=1
 goto :EOF
