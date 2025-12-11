@@ -1,12 +1,12 @@
 @echo off
 setlocal EnableDelayedExpansion
-title ASN - EMG Analysis System Validator V3
+title ASN - EMG Analysis System Validator V4
 color 0B
 
 :: ==============================================================================
-::  ASN - MOVEMENT SIGNAL ANALYSIS PIPELINE VALIDATOR (V3)
+::  ASN - MOVEMENT SIGNAL ANALYSIS PIPELINE VALIDATOR (V4)
 ::  Platform: Windows 11
-::  Fixes: Escaped parentheses in echo statements inside IF blocks.
+::  Fixes: Fully escaped parentheses in all IF/ELSE blocks.
 :: ==============================================================================
 
 :: --- 1. INITIALIZATION & LOGGING ---
@@ -17,7 +17,7 @@ echo  ASN SYSTEM CHECK LOG - %DATE% %TIME% >> "%LOGFILE%"
 echo ============================================================================== >> "%LOGFILE%"
 
 echo.
-echo  [SYSTEM] Initializing Validation Pipeline V3...
+echo  [SYSTEM] Initializing Validation Pipeline V4...
 echo  [SYSTEM] Logs will be saved to: %LOGFILE%
 echo.
 
@@ -63,7 +63,8 @@ for /L %%i in (1,1,31) do (
 echo.
 echo  [INFO] Total Valid Datasets Found: !FOUND_COUNT!
 if !MISSING_DATA! gtr 0 (
-    echo  [WARNING] !MISSING_DATA! datasets were incomplete or missing (See Log).
+    :: FIX V4: Escaped parentheses here ^(See Log^)
+    echo  [WARNING] !MISSING_DATA! datasets were incomplete or missing ^(See Log^).
 ) else (
     echo  [SUCCESS] All 31 datasets are present.
 )
@@ -131,8 +132,6 @@ goto :EOF
 :CHECK_DATASET
 :: Usage: call :CHECK_DATASET [Number]
 set "NUM=%1"
-:: Handle padding logic manually for S01-S09 vs S10-S31 if needed
-:: But Physionet sometimes uses S01 or S1. We check both possibilities.
 set "FILE_A=S%NUM%"
 if %NUM% lss 10 (set "FILE_B=S0%NUM%") else (set "FILE_B=S%NUM%")
 
@@ -150,7 +149,6 @@ if exist "%FILE_A%.hea" (
 :: If header exists, check dat
 if exist "%TARGET%.dat" (
     echo   > Found: %TARGET%
-    :: FIX: Escaped parenthesis with ^( and ^)
     echo [PASS] Dataset %TARGET% ^(Header/Dat^) found. >> "%LOGFILE%"
     set /a FOUND_COUNT+=1
 ) else (
