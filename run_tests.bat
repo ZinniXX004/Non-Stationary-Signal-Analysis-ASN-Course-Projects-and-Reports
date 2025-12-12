@@ -4,7 +4,7 @@ title ASN - EMG Analysis System Validator V5 (Stable)
 color 0B
 
 :: ==============================================================================
-::  ASN - MOVEMENT SIGNAL ANALYSIS PIPELINE VALIDATOR
+::  MOVEMENT SIGNAL ANALYSIS PIPELINE VALIDATOR
 ::  Platform: Windows 11
 ::  Flattened logic using GOTO to eliminate False Positives.
 :: ==============================================================================
