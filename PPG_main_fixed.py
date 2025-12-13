@@ -1,241 +1,486 @@
 """
--+-+-+ IMPORTANT NOTES (READ FIRST) +-+-+-
-This is the refactored backend logic module (PPG_main_fixed.py). It contains
-all the signal processing classes and functions but NO PLOTTING code. It is
-designed to be imported by a separate GUI file.
+-+-+-+ PPG ANALYSIS BACKEND (FIXED & ROBUST) +-+-+-
+Author: Jeremia Manalu (Revisions by Assistant)
 
---- MODIFICATION HIGHLIGHTS ---
-- [PLOT FIX] Corrected the `calculate_qj_frequency_responses` function to properly
-  scale the frequency axis. It now uses a single high-resolution template for Hw/Gw
-  and samples from it, preserving the plot's morphology for downsampled signals.
-- [AMPLITUDE FIX] Added a signal normalization step in `HRV_Analyzer._preprocess_and_filter`.
-  The output signal is now scaled to a standard deviation of 1, making its amplitude
-  consistent regardless of the downsampling factor.
-- [HRV FIX] The amplitude normalization also fixes the bug where pNN50 was always zero
-  by providing a stable signal to the peak detector, allowing it to capture true
-  beat-to-beat variability.
-
-Thanks,
-Jemi
-5023231017
-
-GG
+Updates:
+1. Enforced integer types for all index arrays in 'analyze_signal_zero_crossing' 
+   to prevent IndexError in GUI plotting.
+2. Maintained 'Filter_CustomRef' and 'CubicSplineInterpolate' logic strict to Delphi.
+3. Prepared HRV Analyzer to handle both Original and Downsampled inputs safely.
 """
 
 import numpy as np
 import pandas as pd
 from collections import defaultdict
+import math
 
-# --- MANUAL IMPLEMENTATIONS (REPLACING SCIPY) ---
+# ==============================================================================
+# 1. CORE MATHEMATICS & FILTERS
+# ==============================================================================
 
-def manual_butter_bandpass(lowcut, highcut, fs, order=2):
-    nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
-    low_w = 2 * fs * np.tan(np.pi * low / fs)
-    high_w = 2 * fs * np.tan(np.pi * high / fs)
-    poles = np.exp(1j * np.pi * (2 * np.arange(1, order + 1) + order - 1) / (2 * order))
-    alpha = np.cos(np.pi * (high + low) / (2 * fs)) / np.cos(np.pi * (high - low) / (2 * fs))
-    k = np.tan(np.pi * (high - low) / (2 * fs))
-    p_bp = []
-    for p in poles:
-        radical = np.sqrt(k**2 * p**2 - 4 * alpha**2 + 0j)
-        p_bp.append((k * p + radical) / (2 * alpha))
-        p_bp.append((k * p - radical) / (2 * alpha))
-    z_p = [(2 + p) / (2 - p) for p in p_bp]
-    z_z = [1, -1] * order
-    a = np.poly(z_p)
-    b = np.poly(z_z)
-    center_freq_rad = np.pi * (high + low) / 2
-    w_eval = np.exp(1j * center_freq_rad)
-    gain = np.abs(np.polyval(b, w_eval) / np.polyval(a, w_eval))
-    if gain != 0: b /= gain
-    return b.real, a.real
+def dirac_delta(k):
+    """
+    Fungsi Dirac Delta sederhana: 
+    Return 1 jika k=0, selain itu 0.
+    """
+    return 1 if k == 0 else 0
 
-def manual_lfilter(b, a, x):
-    y = np.zeros_like(x)
-    for n in range(len(x)):
-        forward_sum = 0
-        for k in range(len(b)):
-            if n - k >= 0: forward_sum += b[k] * x[n - k]
-        feedback_sum = 0
-        for k in range(1, len(a)):
-            if n - k >= 0: feedback_sum += a[k] * y[n - k]
-        y[n] = (forward_sum - feedback_sum) / a[0]
-    return y
+def filter_custom_ref(signal, fs, low_cutoff, high_cutoff):
+    """
+    Implementasi Filter IIR (Infinite Impulse Response) manual.
+    Struktur: Cascade LPF (Orde 2) -> HPF (Orde 1).
+    Menggunakan koefisien analog-ke-digital spesifik.
+    """
+    signal = np.array(signal, dtype=float)
+    N = len(signal)
+    
+    # Safety check untuk sinyal terlalu pendek
+    if N < 3:
+        return signal
 
-def manual_find_peaks(x, prominence=None, distance=None, height=None):
-    dx = np.diff(x)
-    peaks_idx = np.where((np.hstack([dx, 0]) <= 0) & (np.hstack([0, dx]) > 0))[0]
-    if height is not None:
-        peaks_idx = peaks_idx[x[peaks_idx] >= height]
-    if len(peaks_idx) == 0: return np.array([], dtype=int)
-    if distance is not None:
-        peaks_idx = peaks_idx[np.argsort(-x[peaks_idx])]
-        keep = np.ones(len(peaks_idx), dtype=bool)
-        for i in range(len(peaks_idx)):
-            if not keep[i]: continue
-            current_peak_loc = peaks_idx[i]
-            for j in range(i + 1, len(peaks_idx)):
-                if abs(current_peak_loc - peaks_idx[j]) < distance:
-                    keep[j] = False
-        peaks_idx = peaks_idx[keep]
-        peaks_idx = np.sort(peaks_idx)
-    if prominence is not None and len(peaks_idx) > 0:
-        prominences = []
-        for peak in peaks_idx:
-            left_base_idx = 0
-            for i in range(peak - 1, -1, -1):
-                if x[i] > x[peak]: left_base_idx = i; break
-            right_base_idx = len(x) - 1
-            for i in range(peak + 1, len(x)):
-                if x[i] > x[peak]: right_base_idx = i; break
-            lowest_contour = np.min(x[left_base_idx:right_base_idx+1]) if left_base_idx < right_base_idx else x[peak]
-            prominences.append(x[peak] - lowest_contour)
-        peaks_idx = peaks_idx[np.array(prominences) >= prominence]
-    return peaks_idx
+    # Parameter Dasar
+    Tm = 1.0 / fs
+    WcLPF = 2 * np.pi * high_cutoff
+    WcHPF = 2 * np.pi * low_cutoff
 
-# --- UTILITY FUNCTIONS ---
+    # --- 1. Hitung Koefisien LPF (Low Pass Filter) ---
+    denom_lpf = (4 / (Tm**2)) + (2 * np.sqrt(2) * WcLPF / Tm) + (WcLPF**2)
+    
+    if denom_lpf == 0:
+        return signal # Hindari pembagian dengan nol
 
-def welch_from_scratch(signal_data, fs, segment_len=256, overlap_ratio=0.5, fft_func=None):
+    LPFb1 = ((8 / (Tm**2)) - 2 * (WcLPF**2)) / denom_lpf
+    LPFb2 = ((4 / (Tm**2)) - (2 * np.sqrt(2) * WcLPF / Tm) + (WcLPF**2)) / denom_lpf
+    LPFa0 = (WcLPF**2) / denom_lpf
+    LPFa1 = 2 * (WcLPF**2) / denom_lpf
+    LPFa2 = LPFa0
+
+    # --- 2. Hitung Koefisien HPF (High Pass Filter) ---
+    denom_hpf = WcHPF + (2 / Tm)
+    
+    if denom_hpf == 0:
+        return signal
+
+    HPFa0 = (2 / Tm) / denom_hpf
+    HPFa1 = -HPFa0
+    HPFb1 = (WcHPF - (2 / Tm)) / denom_hpf
+
+    # --- 3. Eksekusi LPF ---
+    sig_lpf = np.zeros(N)
+    sig_lpf[0] = signal[0]
+    if N > 1:
+        sig_lpf[1] = signal[1]
+    
+    for i in range(2, N):
+        sig_lpf[i] = (LPFb1 * sig_lpf[i-1]) - (LPFb2 * sig_lpf[i-2]) + \
+                     (LPFa0 * signal[i]) + (LPFa1 * signal[i-1]) + (LPFa2 * signal[i-2])
+
+    # --- 4. Eksekusi HPF (Input diambil dari hasil LPF) ---
+    result = np.zeros(N)
+    # result[0] tetap 0 (inisialisasi filter)
+    
+    for i in range(1, N):
+        result[i] = (HPFa0 * (sig_lpf[i] - sig_lpf[i-1])) - (HPFb1 * result[i-1])
+
+    return result
+
+def linear_detrend(signal):
+    """
+    Menghilangkan tren linear (garis lurus) dari sinyal.
+    Penting sebelum melakukan analisis frekuensi (FFT/PSD).
+    """
+    y = np.array(signal)
+    x = np.arange(len(y))
+    if len(y) < 2:
+        return y - np.mean(y)
+    
+    # Perhitungan Regresi Linear Manual (Least Squares)
+    n = len(y)
+    sum_x = np.sum(x)
+    sum_y = np.sum(y)
+    sum_xy = np.sum(x * y)
+    sum_xx = np.sum(x * x)
+    
+    denominator = (n * sum_xx - sum_x * sum_x)
+    if denominator == 0:
+        return y - np.mean(y)
+        
+    slope = (n * sum_xy - sum_x * sum_y) / denominator
+    intercept = (sum_y - slope * sum_x) / n
+    
+    trend = slope * x + intercept
+    return y - trend
+
+def cubic_spline_interpolate(x_in, y_in, x_out):
+    """
+    Implementasi Manual Cubic Spline Interpolation.
+    Diterjemahkan dari kode Delphi untuk memastikan hasil Frequency Domain identik.
+    """
+    n = len(x_in)
+    if n < 2:
+        return np.zeros_like(x_out)
+    
+    # Step 1: Hitung selisih h
+    h = np.diff(x_in)
+    
+    # Step 2: Hitung alpha
+    alpha = np.zeros(n - 1)
+    for i in range(1, n - 1):
+        if h[i] != 0 and h[i-1] != 0:
+            alpha[i] = (3/h[i]) * (y_in[i+1] - y_in[i]) - (3/h[i-1]) * (y_in[i] - y_in[i-1])
+            
+    # Step 3: Selesaikan matriks Tridiagonal
+    l = np.zeros(n)
+    mu = np.zeros(n)
+    z = np.zeros(n)
+    l[0] = 1.0
+    
+    for i in range(1, n - 1):
+        l[i] = 2 * (x_in[i+1] - x_in[i-1]) - h[i-1] * mu[i-1]
+        if l[i] != 0:
+            mu[i] = h[i] / l[i]
+            z[i] = (alpha[i] - h[i-1] * z[i-1]) / l[i]
+            
+    l[n-1] = 1.0
+    z[n-1] = 0.0
+    
+    # Step 4: Hitung Koefisien c, b, d
+    c = np.zeros(n)
+    b = np.zeros(n-1)
+    d = np.zeros(n-1)
+    
+    for i in range(n - 2, -1, -1):
+        c[i] = z[i] - mu[i] * c[i+1]
+        
+    for i in range(n - 1):
+        if h[i] != 0:
+            d[i] = (c[i+1] - c[i]) / (3 * h[i])
+            b[i] = (y_in[i+1] - y_in[i]) / h[i] - h[i] * (c[i+1] + 2 * c[i]) / 3
+            
+    # Step 5: Interpolasi nilai output (x_out)
+    y_out = np.zeros_like(x_out)
+    
+    for i, xi in enumerate(x_out):
+        # Cari segmen k (Linear search agar aman)
+        k = 0
+        while k < n - 2 and x_in[k+1] < xi:
+            k += 1
+            
+        dx = xi - x_in[k]
+        y_out[i] = y_in[k] + b[k] * dx + c[k] * (dx**2) + d[k] * (dx**3)
+        
+    return y_out
+
+# ==============================================================================
+# 2. SPECTRAL ANALYSIS (WELCH & FFT)
+# ==============================================================================
+
+def fft_from_scratch(signal):
+    """
+    Implementasi Recursive FFT (Radix-2).
+    """
+    x = np.asarray(signal, dtype=np.complex128)
+    N = x.shape[0]
+    
+    if N <= 1: return x
+    
+    # Fallback ke numpy jika panjang bukan pangkat 2 (jarang terjadi karena padding)
+    if N % 2 > 0: return np.fft.fft(x) 
+    
+    even = fft_from_scratch(x[::2])
+    odd = fft_from_scratch(x[1::2])
+    
+    factor = np.exp(-2j * np.pi * np.arange(N // 2) / N)
+    return np.concatenate([even + factor * odd, even - factor * odd])
+
+def welch_from_scratch(signal_data, fs, segment_len=256, overlap_ratio=0.5):
+    """
+    Implementasi Welch's Method.
+    Fitur: Hanning Window, Zero Padding (min 4096 poin) untuk resolusi tinggi.
+    """
     x = np.asarray(signal_data, dtype=float)
     if len(x) < 4: return np.array([]), np.array([])
+    
     nperseg = min(segment_len, len(x))
-    if nperseg < 4: nperseg = len(x)
     noverlap = int(nperseg * overlap_ratio)
     step = nperseg - noverlap
-    if step <= 0: step = 1
+    if step < 1: step = 1
+    
+    # Buat Hanning Window
     window = 0.5 * (1 - np.cos(2 * np.pi * np.arange(nperseg) / (nperseg - 1)))
+    sum_sq_win = np.sum(window**2)
+    
+    # Logika Zero Padding: Minimal 4096 point (Meniru Delphi)
+    min_nfft = 4096
+    nfft = 1 << (nperseg - 1).bit_length() # Next power of 2
+    if nfft < min_nfft: nfft = min_nfft
+    
     num_segments = (len(x) - noverlap) // step
-    psd_segments = []
-    if fft_func is None: raise ValueError("fft_func must be supplied to welch_from_scratch.")
+    if num_segments < 1: num_segments = 1
+    
+    psd_accum = np.zeros(nfft)
+    count = 0
+    
     for i in range(num_segments):
         start = i * step
-        end = start + nperseg
-        if end > len(x): break
-        segment = x[start:end] * window
-        fft_complex = fft_func(segment)
-        power_spectrum = (np.abs(fft_complex)**2) / (fs * np.sum(window**2))
-        psd_segments.append(power_spectrum)
-    if not psd_segments: return np.array([]), np.array([])
-    avg_psd = np.mean(psd_segments, axis=0)
-    N_fft = len(avg_psd)
-    frequencies = np.fft.fftfreq(N_fft, 1.0/fs)
-    half = N_fft // 2
-    psd_single_sided = avg_psd[:half] * 2
-    if len(psd_single_sided) > 0: psd_single_sided[0] /= 2
-    return frequencies[:half], psd_single_sided
+        if start + nperseg > len(x): break
+        
+        segment = x[start : start + nperseg] * window
+        
+        # Zero Padding (dilakukan otomatis oleh np.fft.fft jika n > len)
+        fft_out = np.fft.fft(segment, n=nfft) 
+        
+        # Hitung Power Spectrum Segmen
+        psd_seg = (np.abs(fft_out)**2) / (fs * sum_sq_win)
+        psd_accum += psd_seg
+        count += 1
+        
+    if count == 0: return np.array([]), np.array([])
+    
+    avg_psd = psd_accum / count
+    
+    # Ambil sisi positif spektrum (One-sided)
+    half = nfft // 2
+    freqs = np.fft.fftfreq(nfft, 1/fs)[:half]
+    psd = avg_psd[:half]
+    
+    # Konservasi Energi (Kali 2 untuk komponen AC)
+    if len(psd) > 1:
+        psd[1:] *= 2
+    
+    return freqs, psd
 
-def extract_rate_from_signal(signal, fs, freq_band, fft_func):
-    if signal is None or len(signal) < 10 or fs <= 0: return 0
-    freqs, psd = welch_from_scratch(signal - np.mean(signal), fs, segment_len=min(512, len(signal)), fft_func=fft_func)
-    if freqs.size == 0 or psd.size == 0: return 0
-    band_mask = (freqs >= freq_band[0]) & (freqs <= freq_band[1])
-    if not np.any(band_mask): return 0
-    peak_freq_in_band = freqs[band_mask][np.argmax(psd[band_mask])]
-    return peak_freq_in_band * 60
+def extract_rate_from_signal(signal, fs, freq_band, fft_func=None):
+    """
+    Mengekstrak frekuensi dominan (Rate) menggunakan:
+    Detrend -> Welch -> Smoothing -> Peak Detection -> Quinn's Interpolation.
+    Output dalam Hertz (Hz).
+    """
+    if signal is None or len(signal) < 10 or fs <= 0: return 0.0
+    
+    # 1. Detrending
+    sig_detrend = signal - np.mean(signal)
+    
+    # 2. Welch PSD (High Res)
+    # Gunakan seluruh panjang sinyal sebagai satu segmen besar untuk resolusi maksimal pada rate rendah
+    freqs, psd = welch_from_scratch(sig_detrend, fs, segment_len=len(signal), overlap_ratio=0.5)
+    if len(freqs) == 0: return 0.0
+    
+    # 3. Smoothing (3-point moving average)
+    smoothed_psd = np.copy(psd)
+    if len(psd) > 2:
+        smoothed_psd[1:-1] = (psd[:-2] + psd[1:-1] + psd[2:]) / 3.0
+    
+    # 4. Cari Peak dalam Band
+    low_cut, high_cut = freq_band
+    mask = (freqs >= low_cut) & (freqs <= high_cut)
+    
+    if not np.any(mask): return 0.0
+    
+    # Dapatkan indeks
+    band_indices = np.where(mask)[0]
+    peak_local_idx = np.argmax(smoothed_psd[band_indices])
+    peak_global_idx = band_indices[peak_local_idx]
+    max_power = smoothed_psd[peak_global_idx]
+    
+    # 5. Quinn's Interpolation (Refinement untuk akurasi sub-bin)
+    refined_freq = freqs[peak_global_idx]
+    
+    if 0 < peak_global_idx < len(smoothed_psd) - 1 and max_power > 0.0001:
+        y1 = smoothed_psd[peak_global_idx - 1]
+        y2 = smoothed_psd[peak_global_idx]
+        y3 = smoothed_psd[peak_global_idx + 1]
+        
+        denom = (y1 - 2*y2 + y3)
+        if denom != 0:
+            delta = 0.5 * (y1 - y3) / denom
+            # Clamp delta (-0.5 s.d 0.5)
+            delta = max(-0.5, min(0.5, delta))
+            freq_step = freqs[1] - freqs[0]
+            refined_freq = freqs[peak_global_idx] + (delta * freq_step)
+            
+    return refined_freq 
 
-# --- ANALYSIS CLASSES ---
+# ==============================================================================
+# 3. ZERO CROSSING ANALYZER
+# ==============================================================================
+
+def analyze_signal_zero_crossing(signal, time, zero_line_val=0.0):
+    """
+    Analisis Zero Crossing State Machine.
+    Return: Arrays of INDICES (Integers).
+    FIX: Memastikan output berupa Integer Array untuk mencegah IndexError di GUI.
+    """
+    maxima_idx = []
+    minima_idx = []
+    zero_cross_idx = []
+    
+    if len(signal) < 2: 
+        return np.array(maxima_idx, dtype=int), np.array(minima_idx, dtype=int), np.array(zero_cross_idx, dtype=int), zero_line_val
+        
+    # State Variables
+    is_positive = signal[0] >= zero_line_val
+    local_max = -np.inf
+    local_min = np.inf
+    idx_max = -1
+    idx_min = -1
+    
+    # Refractory Period Logic (300 ms)
+    min_refractory_period = 0.30 
+    last_peak_time = -999.0
+    
+    for i in range(len(signal)):
+        val = signal[i]
+        
+        # A. Cari Ekstrim Lokal
+        if is_positive:
+            if val > local_max:
+                local_max = val
+                idx_max = i
+        else:
+            if val < local_min:
+                local_min = val
+                idx_min = i
+                
+        # B. Cek Zero Crossing
+        if i < len(signal) - 1:
+            # Case 1: Crossing DOWN (Positif -> Negatif)
+            if is_positive and (signal[i+1] < zero_line_val):
+                is_positive = False
+                zero_cross_idx.append(i)
+                
+                # --- Validasi Puncak (Refractory) ---
+                if idx_max != -1:
+                    current_peak_time = time[idx_max]
+                    
+                    if len(maxima_idx) == 0:
+                        maxima_idx.append(idx_max)
+                        last_peak_time = current_peak_time
+                    else:
+                        time_diff = current_peak_time - last_peak_time
+                        
+                        if time_diff >= min_refractory_period:
+                            # Jarak aman, terima puncak baru
+                            maxima_idx.append(idx_max)
+                            last_peak_time = current_peak_time
+                        else:
+                            # Terlalu dekat. Cek amplitudo.
+                            last_peak_idx = maxima_idx[-1]
+                            if signal[idx_max] > signal[last_peak_idx]:
+                                # Puncak baru lebih tinggi, ganti yang lama
+                                maxima_idx.pop()
+                                maxima_idx.append(idx_max)
+                                last_peak_time = current_peak_time
+                                
+                # Reset Pencarian Minima
+                local_min = np.inf
+                idx_min = -1
+                
+            # Case 2: Crossing UP (Negatif -> Positif)
+            elif (not is_positive) and (signal[i+1] >= zero_line_val):
+                is_positive = True
+                zero_cross_idx.append(i)
+                
+                # Simpan Minima (Diastolik)
+                if idx_min != -1:
+                    minima_idx.append(idx_min)
+                    
+                # Reset Pencarian Maxima
+                local_max = -np.inf
+                idx_max = -1
+                
+    # CRITICAL FIX: Cast lists to numpy array of INT
+    return (np.array(maxima_idx, dtype=int), 
+            np.array(minima_idx, dtype=int), 
+            np.array(zero_cross_idx, dtype=int), 
+            zero_line_val)
+
+# ==============================================================================
+# 4. MAIN ANALYZER CLASSES
+# ==============================================================================
 
 class PPGStressAnalyzer:
-    def __init__(self, sampling_rate=125.0):
+    def __init__(self, sampling_rate=50.0): 
         self.fs = sampling_rate
         self.original_fs = sampling_rate
         self.qj_time_coeffs = self._initialize_qj_time_coeffs()
         
-    def dirac_delta(self, x):
-        return 1 if x == 0 else 0
-
     def _initialize_qj_time_coeffs(self):
+        """Inisialisasi Koefisien DWT Hardcoded (Q1-Q8)."""
         qj_filters = {}
+        dd = dirac_delta 
+        
         for j in range(1, 9):
             filter_dict = {}
             start_k = -(2**j + 2**(j-1) - 2)
             end_k = (1 - 2**(j-1)) + 1
+            k_range = range(start_k, end_k + 1)
+            
             if j == 1:
-                for k in range(start_k, end_k): filter_dict[k] = -2 * (self.dirac_delta(k) - self.dirac_delta(k + 1))
+                for k in k_range: filter_dict[k] = -2 * (dd(k) - dd(k + 1))
             elif j == 2:
-                for k in range(start_k, end_k): filter_dict[k] = -1/4 * (self.dirac_delta(k-1) + 3*self.dirac_delta(k) + 2*self.dirac_delta(k+1) - 2*self.dirac_delta(k+2) - 3*self.dirac_delta(k+3) - self.dirac_delta(k+4))
+                for k in k_range: filter_dict[k] = -1/4 * (dd(k-1) + 3*dd(k) + 2*dd(k+1) - 2*dd(k+2) - 3*dd(k+3) - dd(k+4))
             elif j == 3:
-                for k in range(start_k, end_k): filter_dict[k] = -1/32 * (self.dirac_delta(k-3) + 3*self.dirac_delta(k-2) + 6*self.dirac_delta(k-1) + 10*self.dirac_delta(k) + 11*self.dirac_delta(k+1) + 9*self.dirac_delta(k+2) + 4*self.dirac_delta(k+3) - 4*self.dirac_delta(k+4) - 9*self.dirac_delta(k+5) - 11*self.dirac_delta(k+6) - 10*self.dirac_delta(k+7) - 6*self.dirac_delta(k+8) - 3*self.dirac_delta(k+9) - self.dirac_delta(k+10))
+                for k in k_range: filter_dict[k] = -1/32 * (dd(k-3) + 3*dd(k-2) + 6*dd(k-1) + 10*dd(k) + 11*dd(k+1) + 9*dd(k+2) + 4*dd(k+3) - 4*dd(k+4) - 9*dd(k+5) - 11*dd(k+6) - 10*dd(k+7) - 6*dd(k+8) - 3*dd(k+9) - dd(k+10))
             elif j == 4:
-                for k in range(start_k, end_k): filter_dict[k] = -1/256 * (self.dirac_delta(k-7) + 3*self.dirac_delta(k-6) + 6*self.dirac_delta(k-5) + 10*self.dirac_delta(k-4) + 15*self.dirac_delta(k-3) + 21*self.dirac_delta(k-2) + 28*self.dirac_delta(k-1) + 36*self.dirac_delta(k) + 41*self.dirac_delta(k+1) + 43*self.dirac_delta(k+2) + 42*self.dirac_delta(k+3) + 38*self.dirac_delta(k+4) + 31*self.dirac_delta(k+5) + 21*self.dirac_delta(k+6) + 8*self.dirac_delta(k+7) - 8*self.dirac_delta(k+8) - 21*self.dirac_delta(k+9) - 31*self.dirac_delta(k+10) - 38*self.dirac_delta(k+11) - 42*self.dirac_delta(k+12) - 43*self.dirac_delta(k+13) - 41*self.dirac_delta(k+14) - 36*self.dirac_delta(k+15) - 28*self.dirac_delta(k+16) - 21*self.dirac_delta(k+17) - 15*self.dirac_delta(k+18) - 10*self.dirac_delta(k+19) - 6*self.dirac_delta(k+20) - 3*self.dirac_delta(k+21) - self.dirac_delta(k+22))
+                for k in k_range: filter_dict[k] = -1/256 * (dd(k-7) + 3*dd(k-6) + 6*dd(k-5) + 10*dd(k-4) + 15*dd(k-3) + 21*dd(k-2) + 28*dd(k-1) + 36*dd(k) + 41*dd(k+1) + 43*dd(k+2) + 42*dd(k+3) + 38*dd(k+4) + 31*dd(k+5) + 21*dd(k+6) + 8*dd(k+7) - 8*dd(k+8) - 21*dd(k+9) - 31*dd(k+10) - 38*dd(k+11) - 42*dd(k+12) - 43*dd(k+13) - 41*dd(k+14) - 36*dd(k+15) - 28*dd(k+16) - 21*dd(k+17) - 15*dd(k+18) - 10*dd(k+19) - 6*dd(k+20) - 3*dd(k+21) - dd(k+22))
             elif j == 5:
-                 for k in range(start_k, end_k): filter_dict[k] = -1/2048 * (self.dirac_delta(k-15) + 3*self.dirac_delta(k-14) + 6*self.dirac_delta(k-13) + 10*self.dirac_delta(k-12) + 15*self.dirac_delta(k-11) + 21*self.dirac_delta(k-10) + 28*self.dirac_delta(k-9) + 36*self.dirac_delta(k-8) + 45*self.dirac_delta(k-7) + 55*self.dirac_delta(k-6) + 66*self.dirac_delta(k-5) + 78*self.dirac_delta(k-4) + 91*self.dirac_delta(k-3) + 105*self.dirac_delta(k-2) + 120*self.dirac_delta(k-1) + 136*self.dirac_delta(k) + 149*self.dirac_delta(k+1) + 159*self.dirac_delta(k+2) + 166*self.dirac_delta(k+3) + 170*self.dirac_delta(k+4) + 171*self.dirac_delta(k+5) + 169*self.dirac_delta(k+6) + 164*self.dirac_delta(k+7) + 156*self.dirac_delta(k+8) + 145*self.dirac_delta(k+9) + 131*self.dirac_delta(k+10) + 114*self.dirac_delta(k+11) + 94*self.dirac_delta(k+12) + 71*self.dirac_delta(k+13) + 45*self.dirac_delta(k+14) + 16*self.dirac_delta(k+15) - 16*self.dirac_delta(k+16) - 45*self.dirac_delta(k+17) - 71*self.dirac_delta(k+18) - 94*self.dirac_delta(k+19) - 114*self.dirac_delta(k+20) - 131*self.dirac_delta(k+21) - 145*self.dirac_delta(k+22) - 156*self.dirac_delta(k+23) - 164*self.dirac_delta(k+24) - 169*self.dirac_delta(k+25) - 171*self.dirac_delta(k+26) - 170*self.dirac_delta(k+27) - 166*self.dirac_delta(k+28) - 159*self.dirac_delta(k+29) - 149*self.dirac_delta(k+30) - 136*self.dirac_delta(k+31) - 120*self.dirac_delta(k+32) - 105*self.dirac_delta(k+33) - 91*self.dirac_delta(k+34) - 78*self.dirac_delta(k+35) - 66*self.dirac_delta(k+36) - 55*self.dirac_delta(k+37) - 45*self.dirac_delta(k+38) - 36*self.dirac_delta(k+39) - 28*self.dirac_delta(k+40) - 21*self.dirac_delta(k+41) - 15*self.dirac_delta(k+42) - 10*self.dirac_delta(k+43) - 6*self.dirac_delta(k+44) - 3*self.dirac_delta(k+45) - self.dirac_delta(k+46))
+                 for k in k_range: filter_dict[k] = -1/2048 * (dd(k-15) + 3*dd(k-14) + 6*dd(k-13) + 10*dd(k-12) + 15*dd(k-11) + 21*dd(k-10) + 28*dd(k-9) + 36*dd(k-8) + 45*dd(k-7) + 55*dd(k-6) + 66*dd(k-5) + 78*dd(k-4) + 91*dd(k-3) + 105*dd(k-2) + 120*dd(k-1) + 136*dd(k) + 149*dd(k+1) + 159*dd(k+2) + 166*dd(k+3) + 170*dd(k+4) + 171*dd(k+5) + 169*dd(k+6) + 164*dd(k+7) + 156*dd(k+8) + 145*dd(k+9) + 131*dd(k+10) + 114*dd(k+11) + 94*dd(k+12) + 71*dd(k+13) + 45*dd(k+14) + 16*dd(k+15) - 16*dd(k+16) - 45*dd(k+17) - 71*dd(k+18) - 94*dd(k+19) - 114*dd(k+20) - 131*dd(k+21) - 145*dd(k+22) - 156*dd(k+23) - 164*dd(k+24) - 169*dd(k+25) - 171*dd(k+26) - 170*dd(k+27) - 166*dd(k+28) - 159*dd(k+29) - 149*dd(k+30) - 136*dd(k+31) - 120*dd(k+32) - 105*dd(k+33) - 91*dd(k+34) - 78*dd(k+35) - 66*dd(k+36) - 55*dd(k+37) - 45*dd(k+38) - 36*dd(k+39) - 28*dd(k+40) - 21*dd(k+41) - 15*dd(k+42) - 10*dd(k+43) - 6*dd(k+44) - 3*dd(k+45) - dd(k+46))
             elif j == 6:
-                for k in range(start_k, end_k): filter_dict[k] = -1/16384 * (self.dirac_delta(k-31) + 3*self.dirac_delta(k-30) + 6*self.dirac_delta(k-29) + 10*self.dirac_delta(k-28) + 15*self.dirac_delta(k-27) + 21*self.dirac_delta(k-26) + 28*self.dirac_delta(k-25) + 36*self.dirac_delta(k-24) + 45*self.dirac_delta(k-23) + 55*self.dirac_delta(k-22) + 66*self.dirac_delta(k-21) + 78*self.dirac_delta(k-20) + 91*self.dirac_delta(k-19) + 105*self.dirac_delta(k-18) + 120*self.dirac_delta(k-17) + 136*self.dirac_delta(k-16) + 153*self.dirac_delta(k-15) + 171*self.dirac_delta(k-14) + 190*self.dirac_delta(k-13) + 210*self.dirac_delta(k-12) + 231*self.dirac_delta(k-11) + 253*self.dirac_delta(k-10) + 276*self.dirac_delta(k-9) + 300*self.dirac_delta(k-8) + 325*self.dirac_delta(k-7) + 351*self.dirac_delta(k-6) + 378*self.dirac_delta(k-5) + 406*self.dirac_delta(k-4) + 435*self.dirac_delta(k-3) + 465*self.dirac_delta(k-2) + 496*self.dirac_delta(k-1) + 528*self.dirac_delta(k) + 557*self.dirac_delta(k+1) + 583*self.dirac_delta(k+2) + 606*self.dirac_delta(k+3) + 626*self.dirac_delta(k+4) + 643*self.dirac_delta(k+5) + 657*self.dirac_delta(k+6) + 668*self.dirac_delta(k+7) + 676*self.dirac_delta(k+8) + 681*self.dirac_delta(k+9) + 683*self.dirac_delta(k+10) + 682*self.dirac_delta(k+11) + 678*self.dirac_delta(k+12) + 671*self.dirac_delta(k+13) + 661*self.dirac_delta(k+14) + 648*self.dirac_delta(k+15) + 632*self.dirac_delta(k+16) + 613*self.dirac_delta(k+17) + 591*self.dirac_delta(k+18) + 566*self.dirac_delta(k+19) + 538*self.dirac_delta(k+20) + 507*self.dirac_delta(k+21) + 473*self.dirac_delta(k+22) + 436*self.dirac_delta(k+23) + 396*self.dirac_delta(k+24) + 353*self.dirac_delta(k+25) + 307*self.dirac_delta(k+26) + 258*self.dirac_delta(k+27) + 206*self.dirac_delta(k+28) + 151*self.dirac_delta(k+29) + 93*self.dirac_delta(k+30) + 32*self.dirac_delta(k+31) - 32*self.dirac_delta(k+32) - 93*self.dirac_delta(k+33) - 151*self.dirac_delta(k+34) - 206*self.dirac_delta(k+35) - 258*self.dirac_delta(k+36) - 307*self.dirac_delta(k+37) - 353*self.dirac_delta(k+38) - 396*self.dirac_delta(k+39) - 436*self.dirac_delta(k+40) - 473*self.dirac_delta(k+41) - 507*self.dirac_delta(k+42) - 538*self.dirac_delta(k+43) - 566*self.dirac_delta(k+44) - 591*self.dirac_delta(k+45) - 613*self.dirac_delta(k+46) - 632*self.dirac_delta(k+47) - 648*self.dirac_delta(k+48) - 661*self.dirac_delta(k+49) - 671*self.dirac_delta(k+50) - 678*self.dirac_delta(k+51) - 682*self.dirac_delta(k+52) - 683*self.dirac_delta(k+53) - 681*self.dirac_delta(k+54) - 676*self.dirac_delta(k+55) - 668*self.dirac_delta(k+56) - 657*self.dirac_delta(k+57) - 643*self.dirac_delta(k+58) - 626*self.dirac_delta(k+59) - 606*self.dirac_delta(k+60) - 583*self.dirac_delta(k+61) - 557*self.dirac_delta(k+62) - 528*self.dirac_delta(k+63) - 496*self.dirac_delta(k+64) - 465*self.dirac_delta(k+65) - 435*self.dirac_delta(k+66) - 406*self.dirac_delta(k+67) - 378*self.dirac_delta(k+68) - 351*self.dirac_delta(k+69) - 325*self.dirac_delta(k+70) - 300*self.dirac_delta(k+71) - 276*self.dirac_delta(k+72) - 253*self.dirac_delta(k+73) - 231*self.dirac_delta(k+74) - 210*self.dirac_delta(k+75) - 190*self.dirac_delta(k+76) - 171*self.dirac_delta(k+77) - 153*self.dirac_delta(k+78) - 136*self.dirac_delta(k+79) - 120*self.dirac_delta(k+80) - 105*self.dirac_delta(k+81) - 91*self.dirac_delta(k+82) - 78*self.dirac_delta(k+83) - 66*self.dirac_delta(k+84) - 55*self.dirac_delta(k+85) - 45*self.dirac_delta(k+86) - 36*self.dirac_delta(k+87) - 28*self.dirac_delta(k+88) - 21*self.dirac_delta(k+89) - 15*self.dirac_delta(k+90) - 10*self.dirac_delta(k+91) - 6*self.dirac_delta(k+92) - 3*self.dirac_delta(k+93) - self.dirac_delta(k+94))
+                for k in k_range: filter_dict[k] = -1/16384 * (dd(k-31) + 3*dd(k-30) + 6*dd(k-29) + 10*dd(k-28) + 15*dd(k-27) + 21*dd(k-26) + 28*dd(k-25) + 36*dd(k-24) + 45*dd(k-23) + 55*dd(k-22) + 66*dd(k-21) + 78*dd(k-20) + 91*dd(k-19) + 105*dd(k-18) + 120*dd(k-17) + 136*dd(k-16) + 153*dd(k-15) + 171*dd(k-14) + 190*dd(k-13) + 210*dd(k-12) + 231*dd(k-11) + 253*dd(k-10) + 276*dd(k-9) + 300*dd(k-8) + 325*dd(k-7) + 351*dd(k-6) + 378*dd(k-5) + 406*dd(k-4) + 435*dd(k-3) + 465*dd(k-2) + 496*dd(k-1) + 528*dd(k) + 557*dd(k+1) + 583*dd(k+2) + 606*dd(k+3) + 626*dd(k+4) + 643*dd(k+5) + 657*dd(k+6) + 668*dd(k+7) + 676*dd(k+8) + 681*dd(k+9) + 683*dd(k+10) + 682*dd(k+11) + 678*dd(k+12) + 671*dd(k+13) + 661*dd(k+14) + 648*dd(k+15) + 632*dd(k+16) + 613*dd(k+17) + 591*dd(k+18) + 566*dd(k+19) + 538*dd(k+20) + 507*dd(k+21) + 473*dd(k+22) + 436*dd(k+23) + 396*dd(k+24) + 353*dd(k+25) + 307*dd(k+26) + 258*dd(k+27) + 206*dd(k+28) + 151*dd(k+29) + 93*dd(k+30) + 32*dd(k+31) - 32*dd(k+32) - 93*dd(k+33) - 151*dd(k+34) - 206*dd(k+35) - 258*dd(k+36) - 307*dd(k+37) - 353*dd(k+38) - 396*dd(k+39) - 436*dd(k+40) - 473*dd(k+41) - 507*dd(k+42) - 538*dd(k+43) - 566*dd(k+44) - 591*dd(k+45) - 613*dd(k+46) - 632*dd(k+47) - 648*dd(k+48) - 661*dd(k+49) - 671*dd(k+50) - 678*dd(k+51) - 682*dd(k+52) - 683*dd(k+53) - 681*dd(k+54) - 676*dd(k+55) - 668*dd(k+56) - 657*dd(k+57) - 643*dd(k+58) - 626*dd(k+59) - 606*dd(k+60) - 583*dd(k+61) - 557*dd(k+62) - 528*dd(k+63) - 496*dd(k+64) - 465*dd(k+65) - 435*dd(k+66) - 406*dd(k+67) - 378*dd(k+68) - 351*dd(k+69) - 325*dd(k+70) - 300*dd(k+71) - 276*dd(k+72) - 253*dd(k+73) - 231*dd(k+74) - 210*dd(k+75) - 190*dd(k+76) - 171*dd(k+77) - 153*dd(k+78) - 136*dd(k+79) - 120*dd(k+80) - 105*dd(k+81) - 91*dd(k+82) - 78*dd(k+83) - 66*dd(k+84) - 55*dd(k+85) - 45*dd(k+86) - 36*dd(k+87) - 28*dd(k+88) - 21*dd(k+89) - 15*dd(k+90) - 10*dd(k+91) - 6*dd(k+92) - 3*dd(k+93) - dd(k+94))
             elif j == 7:
-                for k in range(start_k, end_k): filter_dict[k] = -1/131072 * (self.dirac_delta(k-63) + 3*self.dirac_delta(k-62) + 6*self.dirac_delta(k-61) + 10*self.dirac_delta(k-60) + 15*self.dirac_delta(k-59) + 21*self.dirac_delta(k-58) + 28*self.dirac_delta(k-57) + 36*self.dirac_delta(k-56) + 45*self.dirac_delta(k-55) + 55*self.dirac_delta(k-54) + 66*self.dirac_delta(k-53) + 78*self.dirac_delta(k-52) + 91*self.dirac_delta(k-51) + 105*self.dirac_delta(k-50) + 120*self.dirac_delta(k-49) + 136*self.dirac_delta(k-48) + 153*self.dirac_delta(k-47) + 171*self.dirac_delta(k-46) + 190*self.dirac_delta(k-45) + 210*self.dirac_delta(k-44) + 231*self.dirac_delta(k-43) + 253*self.dirac_delta(k-42) + 276*self.dirac_delta(k-41) + 300*self.dirac_delta(k-40) + 325*self.dirac_delta(k-39) + 351*self.dirac_delta(k-38) + 378*self.dirac_delta(k-37) + 406*self.dirac_delta(k-36) + 435*self.dirac_delta(k-35) + 465*self.dirac_delta(k-34) + 496*self.dirac_delta(k-33) + 528*self.dirac_delta(k-32) + 561*self.dirac_delta(k-31) + 595*self.dirac_delta(k-30) + 630*self.dirac_delta(k-29) + 666*self.dirac_delta(k-28) + 703*self.dirac_delta(k-27) + 741*self.dirac_delta(k-26) + 780*self.dirac_delta(k-25) + 820*self.dirac_delta(k-24) + 861*self.dirac_delta(k-23) + 903*self.dirac_delta(k-22) + 946*self.dirac_delta(k-21) + 990*self.dirac_delta(k-20) + 1035*self.dirac_delta(k-19) + 1081*self.dirac_delta(k-18) + 1128*self.dirac_delta(k-17) + 1176*self.dirac_delta(k-16) + 1225*self.dirac_delta(k-15) + 1275*self.dirac_delta(k-14) + 1326*self.dirac_delta(k-13) + 1378*self.dirac_delta(k-12) + 1431*self.dirac_delta(k-11) + 1485*self.dirac_delta(k-10) + 1540*self.dirac_delta(k-9) + 1596*self.dirac_delta(k-8) + 1653*self.dirac_delta(k-7) + 1711*self.dirac_delta(k-6) + 1770*self.dirac_delta(k-5) + 1830*self.dirac_delta(k-4) + 1891*self.dirac_delta(k-3) + 1953*self.dirac_delta(k-2) + 2016*self.dirac_delta(k-1) + 2080*self.dirac_delta(k) + 2141*self.dirac_delta(k+1) + 2199*self.dirac_delta(k+2) + 2254*self.dirac_delta(k+3) + 2306*self.dirac_delta(k+4) + 2355*self.dirac_delta(k+5) + 2401*self.dirac_delta(k+6) + 2444*self.dirac_delta(k+7) + 2484*self.dirac_delta(k+8) + 2521*self.dirac_delta(k+9) + 2555*self.dirac_delta(k+10) + 2586*self.dirac_delta(k+11) + 2614*self.dirac_delta(k+12) + 2639*self.dirac_delta(k+13) + 2661*self.dirac_delta(k+14) + 2680*self.dirac_delta(k+15) + 2696*self.dirac_delta(k+16) + 2709*self.dirac_delta(k+17) + 2719*self.dirac_delta(k+18) + 2726*self.dirac_delta(k+19) + 2730*self.dirac_delta(k+20) + 2731*self.dirac_delta(k+21) + 2729*self.dirac_delta(k+22) + 2724*self.dirac_delta(k+23) + 2716*self.dirac_delta(k+24) + 2705*self.dirac_delta(k+25) + 2691*self.dirac_delta(k+26) + 2674*self.dirac_delta(k+27) + 2654*self.dirac_delta(k+28) + 2631*self.dirac_delta(k+29) + 2605*self.dirac_delta(k+30) + 2576*self.dirac_delta(k+31) + 2544*self.dirac_delta(k+32) + 2509*self.dirac_delta(k+33) + 2471*self.dirac_delta(k+34) + 2430*self.dirac_delta(k+35) + 2386*self.dirac_delta(k+36) + 2339*self.dirac_delta(k+37) + 2289*self.dirac_delta(k+38) + 2236*self.dirac_delta(k+39) + 2180*self.dirac_delta(k+40) + 2121*self.dirac_delta(k+41) + 2059*self.dirac_delta(k+42) + 1994*self.dirac_delta(k+43) + 1926*self.dirac_delta(k+44) + 1855*self.dirac_delta(k+45) + 1781*self.dirac_delta(k+46) + 1704*self.dirac_delta(k+47) + 1624*self.dirac_delta(k+48) + 1541*self.dirac_delta(k+49) + 1455*self.dirac_delta(k+50) + 1366*self.dirac_delta(k+51) + 1274*self.dirac_delta(k+52) + 1179*self.dirac_delta(k+53) + 1081*self.dirac_delta(k+54) + 980*self.dirac_delta(k+55) + 876*self.dirac_delta(k+56) + 769*self.dirac_delta(k+57) + 659*self.dirac_delta(k+58) + 546*self.dirac_delta(k+59) + 430*self.dirac_delta(k+60) + 311*self.dirac_delta(k+61) + 189*self.dirac_delta(k+62) + 64*self.dirac_delta(k+63) - 64*self.dirac_delta(k+64) - 189*self.dirac_delta(k+65) - 311*self.dirac_delta(k+66) - 430*self.dirac_delta(k+67) - 546*self.dirac_delta(k+68) - 659*self.dirac_delta(k+69) - 769*self.dirac_delta(k+70) - 876*self.dirac_delta(k+71) - 980*self.dirac_delta(k+72) - 1081*self.dirac_delta(k+73) - 1179*self.dirac_delta(k+74) - 1274*self.dirac_delta(k+75) - 1366*self.dirac_delta(k+76) - 1455*self.dirac_delta(k+77) - 1541*self.dirac_delta(k+78) - 1624*self.dirac_delta(k+79) - 1704*self.dirac_delta(k+80) - 1781*self.dirac_delta(k+81) - 1855*self.dirac_delta(k+82) - 1926*self.dirac_delta(k+83) - 1994*self.dirac_delta(k+84) - 2059*self.dirac_delta(k+85) - 2121*self.dirac_delta(k+86) - 2180*self.dirac_delta(k+87) - 2236*self.dirac_delta(k+88) - 2289*self.dirac_delta(k+89) - 2339*self.dirac_delta(k+90) - 2386*self.dirac_delta(k+91) - 2430*self.dirac_delta(k+92) - 2471*self.dirac_delta(k+93) - 2509*self.dirac_delta(k+94) - 2544*self.dirac_delta(k+95) - 2576*self.dirac_delta(k+96) - 2605*self.dirac_delta(k+97) - 2631*self.dirac_delta(k+98) - 2654*self.dirac_delta(k+99) - 2674*self.dirac_delta(k+100) - 2691*self.dirac_delta(k+101) - 2705*self.dirac_delta(k+102) - 2716*self.dirac_delta(k+103) - 2724*self.dirac_delta(k+104) - 2729*self.dirac_delta(k+105) - 2731*self.dirac_delta(k+106) - 2730*self.dirac_delta(k+107) - 2726*self.dirac_delta(k+108) - 2719*self.dirac_delta(k+109) - 2709*self.dirac_delta(k+110) - 2696*self.dirac_delta(k+111) - 2680*self.dirac_delta(k+112) - 2661*self.dirac_delta(k+113) - 2639*self.dirac_delta(k+114) - 2614*self.dirac_delta(k+115) - 2586*self.dirac_delta(k+116) - 2555*self.dirac_delta(k+117) - 2521*self.dirac_delta(k+118) - 2484*self.dirac_delta(k+119) - 2444*self.dirac_delta(k+120) - 2401*self.dirac_delta(k+121) - 2355*self.dirac_delta(k+122) - 2306*self.dirac_delta(k+123) - 2254*self.dirac_delta(k+124) - 2199*self.dirac_delta(k+125) - 2141*self.dirac_delta(k+126) - 2080*self.dirac_delta(k+127) - 2016*self.dirac_delta(k+128) - 1953*self.dirac_delta(k+129) - 1891*self.dirac_delta(k+130) - 1830*self.dirac_delta(k+131) - 1770*self.dirac_delta(k+132) - 1711*self.dirac_delta(k+133) - 1653*self.dirac_delta(k+134) - 1596*self.dirac_delta(k+135) - 1540*self.dirac_delta(k+136) - 1485*self.dirac_delta(k+137) - 1431*self.dirac_delta(k+138) - 1378*self.dirac_delta(k+139) - 1326*self.dirac_delta(k+140) - 1275*self.dirac_delta(k+141) - 1225*self.dirac_delta(k+142) - 1176*self.dirac_delta(k+143) - 1128*self.dirac_delta(k+144) - 1081*self.dirac_delta(k+145) - 1035*self.dirac_delta(k+146) - 990*self.dirac_delta(k+147) - 946*self.dirac_delta(k+148) - 903*self.dirac_delta(k+149) - 861*self.dirac_delta(k+150) - 820*self.dirac_delta(k+151) - 780*self.dirac_delta(k+152) - 741*self.dirac_delta(k+153) - 703*self.dirac_delta(k+154) - 666*self.dirac_delta(k+155) - 630*self.dirac_delta(k+156) - 595*self.dirac_delta(k+157) - 561*self.dirac_delta(k+158) - 528*self.dirac_delta(k+159) - 496*self.dirac_delta(k+160) - 465*self.dirac_delta(k+161) - 435*self.dirac_delta(k+162) - 406*self.dirac_delta(k+163) - 378*self.dirac_delta(k+164) - 351*self.dirac_delta(k+165) - 325*self.dirac_delta(k+166) - 300*self.dirac_delta(k+167) - 276*self.dirac_delta(k+168) - 253*self.dirac_delta(k+169) - 231*self.dirac_delta(k+170) - 210*self.dirac_delta(k+171) - 190*self.dirac_delta(k+172) - 171*self.dirac_delta(k+173) - 153*self.dirac_delta(k+174) - 136*self.dirac_delta(k+175) - 120*self.dirac_delta(k+176) - 105*self.dirac_delta(k+177) - 91*self.dirac_delta(k+178) - 78*self.dirac_delta(k+179) - 66*self.dirac_delta(k+180) - 55*self.dirac_delta(k+181) - 45*self.dirac_delta(k+182) - 36*self.dirac_delta(k+183) - 28*self.dirac_delta(k+184) - 21*self.dirac_delta(k+185) - 15*self.dirac_delta(k+186) - 10*self.dirac_delta(k+187) - 6*self.dirac_delta(k+188) - 3*self.dirac_delta(k+189) - self.dirac_delta(k+190))
+                for k in k_range: filter_dict[k] = -1/131072 * (dd(k-63) + 3*dd(k-62) + 6*dd(k-61) + 10*dd(k-60) + 15*dd(k-59) + 21*dd(k-58) + 28*dd(k-57) + 36*dd(k-56) + 45*dd(k-55) + 55*dd(k-54) + 66*dd(k-53) + 78*dd(k-52) + 91*dd(k-51) + 105*dd(k-50) + 120*dd(k-49) + 136*dd(k-48) + 153*dd(k-47) + 171*dd(k-46) + 190*dd(k-45) + 210*dd(k-44) + 231*dd(k-43) + 253*dd(k-42) + 276*dd(k-41) + 300*dd(k-40) + 325*dd(k-39) + 351*dd(k-38) + 378*dd(k-37) + 406*dd(k-36) + 435*dd(k-35) + 465*dd(k-34) + 496*dd(k-33) + 528*dd(k-32) + 561*dd(k-31) + 595*dd(k-30) + 630*dd(k-29) + 666*dd(k-28) + 703*dd(k-27) + 741*dd(k-26) + 780*dd(k-25) + 820*dd(k-24) + 861*dd(k-23) + 903*dd(k-22) + 946*dd(k-21) + 990*dd(k-20) + 1035*dd(k-19) + 1081*dd(k-18) + 1128*dd(k-17) + 1176*dd(k-16) + 1225*dd(k-15) + 1275*dd(k-14) + 1326*dd(k-13) + 1378*dd(k-12) + 1431*dd(k-11) + 1485*dd(k-10) + 1540*dd(k-9) + 1596*dd(k-8) + 1653*dd(k-7) + 1711*dd(k-6) + 1770*dd(k-5) + 1830*dd(k-4) + 1891*dd(k-3) + 1953*dd(k-2) + 2016*dd(k-1) + 2080*dd(k) + 2141*dd(k+1) + 2199*dd(k+2) + 2254*dd(k+3) + 2306*dd(k+4) + 2355*dd(k+5) + 2401*dd(k+6) + 2444*dd(k+7) + 2484*dd(k+8) + 2521*dd(k+9) + 2555*dd(k+10) + 2586*dd(k+11) + 2614*dd(k+12) + 2639*dd(k+13) + 2661*dd(k+14) + 2680*dd(k+15) + 2696*dd(k+16) + 2709*dd(k+17) + 2719*dd(k+18) + 2726*dd(k+19) + 2730*dd(k+20) + 2731*dd(k+21) + 2729*dd(k+22) + 2724*dd(k+23) + 2716*dd(k+24) + 2705*dd(k+25) + 2691*dd(k+26) + 2674*dd(k+27) + 2654*dd(k+28) + 2631*dd(k+29) + 2605*dd(k+30) + 2576*dd(k+31) + 2544*dd(k+32) + 2509*dd(k+33) + 2471*dd(k+34) + 2430*dd(k+35) + 2386*dd(k+36) + 2339*dd(k+37) + 2289*dd(k+38) + 2236*dd(k+39) + 2180*dd(k+40) + 2121*dd(k+41) + 2059*dd(k+42) + 1994*dd(k+43) + 1926*dd(k+44) + 1855*dd(k+45) + 1781*dd(k+46) + 1704*dd(k+47) + 1624*dd(k+48) + 1541*dd(k+49) + 1455*dd(k+50) + 1366*dd(k+51) + 1274*dd(k+52) + 1179*dd(k+53) + 1081*dd(k+54) + 980*dd(k+55) + 876*dd(k+56) + 769*dd(k+57) + 659*dd(k+58) + 546*dd(k+59) + 430*dd(k+60) + 311*dd(k+61) + 189*dd(k+62) + 64*dd(k+63) - 64*dd(k+64) - 189*dd(k+65) - 311*dd(k+66) - 430*dd(k+67) - 546*dd(k+68) - 659*dd(k+69) - 769*dd(k+70) - 876*dd(k+71) - 980*dd(k+72) - 1081*dd(k+73) - 1179*dd(k+74) - 1274*dd(k+75) - 1366*dd(k+76) - 1455*dd(k+77) - 1541*dd(k+78) - 1624*dd(k+79) - 1704*dd(k+80) - 1781*dd(k+81) - 1855*dd(k+82) - 1926*dd(k+83) - 1994*dd(k+84) - 2059*dd(k+85) - 2121*dd(k+86) - 2180*dd(k+87) - 2236*dd(k+88) - 2289*dd(k+89) - 2339*dd(k+90) - 2386*dd(k+91) - 2430*dd(k+92) - 2471*dd(k+93) - 2509*dd(k+94) - 2544*dd(k+95) - 2576*dd(k+96) - 2605*dd(k+97) - 2631*dd(k+98) - 2654*dd(k+99) - 2674*dd(k+100) - 2691*dd(k+101) - 2705*dd(k+102) - 2716*dd(k+103) - 2724*dd(k+104) - 2729*dd(k+105) - 2731*dd(k+106) - 2730*dd(k+107) - 2726*dd(k+108) - 2719*dd(k+109) - 2709*dd(k+110) - 2696*dd(k+111) - 2680*dd(k+112) - 2661*dd(k+113) - 2639*dd(k+114) - 2614*dd(k+115) - 2586*dd(k+116) - 2555*dd(k+117) - 2521*dd(k+118) - 2484*dd(k+119) - 2444*dd(k+120) - 2401*dd(k+121) - 2355*dd(k+122) - 2306*dd(k+123) - 2254*dd(k+124) - 2199*dd(k+125) - 2141*dd(k+126) - 2080*dd(k+127) - 2016*dd(k+128) - 1953*dd(k+129) - 1891*dd(k+130) - 1830*dd(k+131) - 1770*dd(k+132) - 1711*dd(k+133) - 1653*dd(k+134) - 1596*dd(k+135) - 1540*dd(k+136) - 1485*dd(k+137) - 1431*dd(k+138) - 1378*dd(k+139) - 1326*dd(k+140) - 1275*dd(k+141) - 1225*dd(k+142) - 1176*dd(k+143) - 1128*dd(k+144) - 1081*dd(k+145) - 1035*dd(k+146) - 990*dd(k+147) - 946*dd(k+148) - 903*dd(k+149) - 861*dd(k+150) - 820*dd(k+151) - 780*dd(k+152) - 741*dd(k+153) - 703*dd(k+154) - 666*dd(k+155) - 630*dd(k+156) - 595*dd(k+157) - 561*dd(k+158) - 528*dd(k+159) - 496*dd(k+160) - 465*dd(k+161) - 435*dd(k+162) - 406*dd(k+163) - 378*dd(k+164) - 351*dd(k+165) - 325*dd(k+166) - 300*dd(k+167) - 276*dd(k+168) - 253*dd(k+169) - 231*dd(k+170) - 210*dd(k+171) - 190*dd(k+172) - 171*dd(k+173) - 153*dd(k+174) - 136*dd(k+175) - 120*dd(k+176) - 105*dd(k+177) - 91*dd(k+178) - 78*dd(k+179) - 66*dd(k+180) - 55*dd(k+181) - 45*dd(k+182) - 36*dd(k+183) - 28*dd(k+184) - 21*dd(k+185) - 15*dd(k+186) - 10*dd(k+187) - 6*dd(k+188) - 3*dd(k+189) - dd(k+190))
             elif j == 8:
-                for k in range(start_k, end_k): filter_dict[k] = -1/1048576 * (self.dirac_delta(k-127) + 3*self.dirac_delta(k-126) + 6*self.dirac_delta(k-125) + 10*self.dirac_delta(k-124) + 15*self.dirac_delta(k-123) + 21*self.dirac_delta(k-122) + 28*self.dirac_delta(k-121) + 36*self.dirac_delta(k-120) + 45*self.dirac_delta(k-119) + 55*self.dirac_delta(k-118) + 66*self.dirac_delta(k-117) + 78*self.dirac_delta(k-116) + 91*self.dirac_delta(k-115) + 105*self.dirac_delta(k-114) + 120*self.dirac_delta(k-113) + 136*self.dirac_delta(k-112) + 153*self.dirac_delta(k-111) + 171*self.dirac_delta(k-110) + 190*self.dirac_delta(k-109) + 210*self.dirac_delta(k-108) + 231*self.dirac_delta(k-107) + 253*self.dirac_delta(k-106) + 276*self.dirac_delta(k-105) + 300*self.dirac_delta(k-104) + 325*self.dirac_delta(k-103) + 351*self.dirac_delta(k-102) + 378*self.dirac_delta(k-101) + 406*self.dirac_delta(k-100) + 435*self.dirac_delta(k-99) + 465*self.dirac_delta(k-98) + 496*self.dirac_delta(k-97) + 528*self.dirac_delta(k-96) + 561*self.dirac_delta(k-95) + 595*self.dirac_delta(k-94) + 630*self.dirac_delta(k-93) + 666*self.dirac_delta(k-92) + 703*self.dirac_delta(k-91) + 741*self.dirac_delta(k-90) + 780*self.dirac_delta(k-89) + 820*self.dirac_delta(k-88) + 861*self.dirac_delta(k-87) + 903*self.dirac_delta(k-86) + 946*self.dirac_delta(k-85) + 990*self.dirac_delta(k-84) + 1035*self.dirac_delta(k-83) + 1081*self.dirac_delta(k-82) + 1128*self.dirac_delta(k-81) + 1176*self.dirac_delta(k-80) + 1225*self.dirac_delta(k-79) + 1275*self.dirac_delta(k-78) + 1326*self.dirac_delta(k-77) + 1378*self.dirac_delta(k-76) + 1431*self.dirac_delta(k-75) + 1485*self.dirac_delta(k-74) + 1540*self.dirac_delta(k-73) + 1596*self.dirac_delta(k-72) + 1653*self.dirac_delta(k-71) + 1711*self.dirac_delta(k-70) + 1770*self.dirac_delta(k-69) + 1830*self.dirac_delta(k-68) + 1891*self.dirac_delta(k-67) + 1953*self.dirac_delta(k-66) + 2016*self.dirac_delta(k-65) + 2080*self.dirac_delta(k-64) + 2145*self.dirac_delta(k-63) + 2211*self.dirac_delta(k-62) + 2278*self.dirac_delta(k-61) + 2346*self.dirac_delta(k-60) + 2415*self.dirac_delta(k-59) + 2485*self.dirac_delta(k-58) + 2556*self.dirac_delta(k-57) + 2628*self.dirac_delta(k-56) + 2701*self.dirac_delta(k-55) + 2775*self.dirac_delta(k-54) + 2850*self.dirac_delta(k-53) + 2926*self.dirac_delta(k-52) + 3003*self.dirac_delta(k-51) + 3081*self.dirac_delta(k-50) + 3160*self.dirac_delta(k-49) + 3240*self.dirac_delta(k-48) + 3321*self.dirac_delta(k-47) + 3403*self.dirac_delta(k-46) + 3486*self.dirac_delta(k-45) + 3570*self.dirac_delta(k-44) + 3655*self.dirac_delta(k-43) + 3741*self.dirac_delta(k-42) + 3828*self.dirac_delta(k-41) + 3916*self.dirac_delta(k-40) + 4005*self.dirac_delta(k-39) + 4186*self.dirac_delta(k-37) + 4278*self.dirac_delta(k-36) + 4371*self.dirac_delta(k-35) + 4465*self.dirac_delta(k-34) + 4560*self.dirac_delta(k-33) + 4656*self.dirac_delta(k-32) + 4753*self.dirac_delta(k-31) + 4851*self.dirac_delta(k-30) + 4950*self.dirac_delta(k-29) + 5050*self.dirac_delta(k-28) + 5151*self.dirac_delta(k-27) + 5253*self.dirac_delta(k-26) + 5356*self.dirac_delta(k-25) + 5460*self.dirac_delta(k-24) + 5565*self.dirac_delta(k-23) + 5671*self.dirac_delta(k-22) + 5778*self.dirac_delta(k-21) + 5886*self.dirac_delta(k-20) + 5995*self.dirac_delta(k-19) + 6105*self.dirac_delta(k-18) + 6216*self.dirac_delta(k-17) + 6328*self.dirac_delta(k-16) + 6441*self.dirac_delta(k-15) + 6555*self.dirac_delta(k-14) + 6670*self.dirac_delta(k-13) + 6786*self.dirac_delta(k-12) + 6903*self.dirac_delta(k-11) + 7021*self.dirac_delta(k-10) + 7140*self.dirac_delta(k-9) + 7260*self.dirac_delta(k-8) + 7381*self.dirac_delta(k-7) + 7503*self.dirac_delta(k-6) + 7626*self.dirac_delta(k-5) + 7750*self.dirac_delta(k-4) + 7875*self.dirac_delta(k-3) + 8001*self.dirac_delta(k-2) + 8128*self.dirac_delta(k-1) + 8256*self.dirac_delta(k) + 8381*self.dirac_delta(k+1) + 8503*self.dirac_delta(k+2) + 8622*self.dirac_delta(k+3) + 8738*self.dirac_delta(k+4) + 8851*self.dirac_delta(k+5) + 8961*self.dirac_delta(k+6) + 9068*self.dirac_delta(k+7) + 9172*self.dirac_delta(k+8) + 9273*self.dirac_delta(k+9) + 9371*self.dirac_delta(k+10) + 9466*self.dirac_delta(k+11) + 9558*self.dirac_delta(k+12) + 9647*self.dirac_delta(k+13) + 9733*self.dirac_delta(k+14) + 9816*self.dirac_delta(k+15) + 9896*self.dirac_delta(k+16) + 9973*self.dirac_delta(k+17) + 10047*self.dirac_delta(k+18) + 10118*self.dirac_delta(k+19) + 10186*self.dirac_delta(k+20) + 10251*self.dirac_delta(k+21) + 10313*self.dirac_delta(k+22) + 10372*self.dirac_delta(k+23) + 10428*self.dirac_delta(k+24) + 10481*self.dirac_delta(k+25) + 10531*self.dirac_delta(k+26) + 10578*self.dirac_delta(k+27) + 10622*self.dirac_delta(k+28) + 10663*self.dirac_delta(k+29) + 10701*self.dirac_delta(k+30) + 10736*self.dirac_delta(k+31) + 10768*self.dirac_delta(k+32) + 10797*self.dirac_delta(k+33) + 10823*self.dirac_delta(k+34) + 10846*self.dirac_delta(k+35) + 10866*self.dirac_delta(k+36) + 10883*self.dirac_delta(k+37) + 10897*self.dirac_delta(k+38) + 10908*self.dirac_delta(k+39) + 10916*self.dirac_delta(k+40) + 10921*self.dirac_delta(k+41) + 10923*self.dirac_delta(k+42) + 10922*self.dirac_delta(k+43) + 10918*self.dirac_delta(k+44) + 10911*self.dirac_delta(k+45) + 10901*self.dirac_delta(k+46) + 10888*self.dirac_delta(k+47) + 10872*self.dirac_delta(k+48) + 10853*self.dirac_delta(k+49) + 10831*self.dirac_delta(k+50) + 10806*self.dirac_delta(k+51) + 10778*self.dirac_delta(k+52) + 10747*self.dirac_delta(k+53) + 10713*self.dirac_delta(k+54) + 10676*self.dirac_delta(k+55) + 10636*self.dirac_delta(k+56) + 10593*self.dirac_delta(k+57) + 10547*self.dirac_delta(k+58) + 10498*self.dirac_delta(k+59) + 10446*self.dirac_delta(k+60) + 10391*self.dirac_delta(k+61) + 10333*self.dirac_delta(k+62) + 10272*self.dirac_delta(k+63) + 10208*self.dirac_delta(k+64) + 10141*self.dirac_delta(k+65) + 10071*self.dirac_delta(k+66) + 9998*self.dirac_delta(k+67) + 9922*self.dirac_delta(k+68) + 9843*self.dirac_delta(k+69) + 9761*self.dirac_delta(k+70) + 9676*self.dirac_delta(k+71) + 9588*self.dirac_delta(k+72) + 9497*self.dirac_delta(k+73) + 9403*self.dirac_delta(k+74) + 9306*self.dirac_delta(k+75) + 9206*self.dirac_delta(k+76) + 9103*self.dirac_delta(k+77) + 8997*self.dirac_delta(k+78) + 8888*self.dirac_delta(k+79) + 8776*self.dirac_delta(k+80) + 8661*self.dirac_delta(k+81) + 8543*self.dirac_delta(k+82) + 8422*self.dirac_delta(k+83) + 8298*self.dirac_delta(k+84) + 8171*self.dirac_delta(k+85) + 8041*self.dirac_delta(k+86) + 7908*self.dirac_delta(k+87) + 7772*self.dirac_delta(k+88) + 7633*self.dirac_delta(k+89) + 7491*self.dirac_delta(k+90) + 7346*self.dirac_delta(k+91) + 7198*self.dirac_delta(k+92) + 7047*self.dirac_delta(k+93) + 6893*self.dirac_delta(k+94) + 6736*self.dirac_delta(k+95) + 6576*self.dirac_delta(k+96) + 6413*self.dirac_delta(k+97) + 6247*self.dirac_delta(k+98) + 5906*self.dirac_delta(k+100) + 5731*self.dirac_delta(k+101) + 5553*self.dirac_delta(k+102) + 5372*self.dirac_delta(k+103) + 5188*self.dirac_delta(k+104) + 5001*self.dirac_delta(k+105) + 4811*self.dirac_delta(k+106) + 4618*self.dirac_delta(k+107) + 4422*self.dirac_delta(k+108) + 4223*self.dirac_delta(k+109) + 4021*self.dirac_delta(k+110) + 3816*self.dirac_delta(k+111) + 3608*self.dirac_delta(k+112) + 3397*self.dirac_delta(k+113) + 3183*self.dirac_delta(k+114) + 2966*self.dirac_delta(k+115) + 2746*self.dirac_delta(k+116) + 2523*self.dirac_delta(k+117) + 2297*self.dirac_delta(k+118) + 2068*self.dirac_delta(k+119) + 1836*self.dirac_delta(k+120) + 1601*self.dirac_delta(k+121) + 1363*self.dirac_delta(k+122) + 1122*self.dirac_delta(k+123) + 878*self.dirac_delta(k+124) + 631*self.dirac_delta(k+125) + 381*self.dirac_delta(k+126) + 128*self.dirac_delta(k+127) - 128*self.dirac_delta(k+128) - 381*self.dirac_delta(k+129) - 631*self.dirac_delta(k+130) - 878*self.dirac_delta(k+131) - 1122*self.dirac_delta(k+132) - 1363*self.dirac_delta(k+133) - 1601*self.dirac_delta(k+134) - 1836*self.dirac_delta(k+135) - 2068*self.dirac_delta(k+136) - 2297*self.dirac_delta(k+137) - 2523*self.dirac_delta(k+138) - 2746*self.dirac_delta(k+139) - 2966*self.dirac_delta(k+140) - 3183*self.dirac_delta(k+141) - 3397*self.dirac_delta(k+142) - 3608*self.dirac_delta(k+143) - 3816*self.dirac_delta(k+144) - 4021*self.dirac_delta(k+145) - 4223*self.dirac_delta(k+146) - 4422*self.dirac_delta(k+147) - 4618*self.dirac_delta(k+148) - 4811*self.dirac_delta(k+149) - 5001*self.dirac_delta(k+150) - 5188*self.dirac_delta(k+151) - 5372*self.dirac_delta(k+152) - 5553*self.dirac_delta(k+153) - 5731*self.dirac_delta(k+154) - 5906*self.dirac_delta(k+155) - 6078*self.dirac_delta(k+156) - 6247*self.dirac_delta(k+157) - 6413*self.dirac_delta(k+158) - 6576*self.dirac_delta(k+159) - 6736*self.dirac_delta(k+160) - 6893*self.dirac_delta(k+161) - 7047*self.dirac_delta(k+162) - 7198*self.dirac_delta(k+163) - 7346*self.dirac_delta(k+164) - 7491*self.dirac_delta(k+165) - 7633*self.dirac_delta(k+166) - 7772*self.dirac_delta(k+167) - 7908*self.dirac_delta(k+168) - 8041*self.dirac_delta(k+169) - 8171*self.dirac_delta(k+170) - 8298*self.dirac_delta(k+171) - 8422*self.dirac_delta(k+172) - 8543*self.dirac_delta(k+173) - 8661*self.dirac_delta(k+174) - 8776*self.dirac_delta(k+175) - 8888*self.dirac_delta(k+176) - 8997*self.dirac_delta(k+177) - 9103*self.dirac_delta(k+178) - 9206*self.dirac_delta(k+179) - 9306*self.dirac_delta(k+180) - 9403*self.dirac_delta(k+181) - 9497*self.dirac_delta(k+182) - 9588*self.dirac_delta(k+183) - 9676*self.dirac_delta(k+184) - 9761*self.dirac_delta(k+185) - 9843*self.dirac_delta(k+186) - 9922*self.dirac_delta(k+187) - 9998*self.dirac_delta(k+188) - 10071*self.dirac_delta(k+189) - 10141*self.dirac_delta(k+190) - 10208*self.dirac_delta(k+191) - 10272*self.dirac_delta(k+192) - 10333*self.dirac_delta(k+193) - 10391*self.dirac_delta(k+194) - 10446*self.dirac_delta(k+195) - 10498*self.dirac_delta(k+196) - 10547*self.dirac_delta(k+197) - 10593*self.dirac_delta(k+198) - 10636*self.dirac_delta(k+199) - 10676*self.dirac_delta(k+200) - 10713*self.dirac_delta(k+201) - 10747*self.dirac_delta(k+202) - 10778*self.dirac_delta(k+203) - 10806*self.dirac_delta(k+204) - 10831*self.dirac_delta(k+205) - 10853*self.dirac_delta(k+206) - 10872*self.dirac_delta(k+207) - 10888*self.dirac_delta(k+208) - 10901*self.dirac_delta(k+209) - 10911*self.dirac_delta(k+210) - 10918*self.dirac_delta(k+211) - 10922*self.dirac_delta(k+212) - 10923*self.dirac_delta(k+213) - 10921*self.dirac_delta(k+214) - 10916*self.dirac_delta(k+215) - 10908*self.dirac_delta(k+216) - 10897*self.dirac_delta(k+217) - 10883*self.dirac_delta(k+218) - 10866*self.dirac_delta(k+219) - 10846*self.dirac_delta(k+220) - 10823*self.dirac_delta(k+221) - 10797*self.dirac_delta(k+222) - 10768*self.dirac_delta(k+223) - 10736*self.dirac_delta(k+224) - 10701*self.dirac_delta(k+225) - 10663*self.dirac_delta(k+226) - 10622*self.dirac_delta(k+227) - 10578*self.dirac_delta(k+228) - 10531*self.dirac_delta(k+229) - 10481*self.dirac_delta(k+230) - 10428*self.dirac_delta(k+231) - 10372*self.dirac_delta(k+232) - 10313*self.dirac_delta(k+233) - 10251*self.dirac_delta(k+234) - 10186*self.dirac_delta(k+235) - 10118*self.dirac_delta(k+236) - 10047*self.dirac_delta(k+237) - 9973*self.dirac_delta(k+238) - 9896*self.dirac_delta(k+239) - 9816*self.dirac_delta(k+240) - 9733*self.dirac_delta(k+241) - 9647*self.dirac_delta(k+242) - 9558*self.dirac_delta(k+243) - 9466*self.dirac_delta(k+244) - 9371*self.dirac_delta(k+245) - 9273*self.dirac_delta(k+246) - 9172*self.dirac_delta(k+247) - 9068*self.dirac_delta(k+248) - 8961*self.dirac_delta(k+249) - 8851*self.dirac_delta(k+250) - 8738*self.dirac_delta(k+251) - 8622*self.dirac_delta(k+252) - 8503*self.dirac_delta(k+253) - 8381*self.dirac_delta(k+254) - 8256*self.dirac_delta(k+255) - 8128*self.dirac_delta(k+256) - 8001*self.dirac_delta(k+257) - 7875*self.dirac_delta(k+258) - 7750*self.dirac_delta(k+259) - 7626*self.dirac_delta(k+260) - 7503*self.dirac_delta(k+261) - 7381*self.dirac_delta(k+262) - 7260*self.dirac_delta(k+263) - 7140*self.dirac_delta(k+264) - 7021*self.dirac_delta(k+265) - 6903*self.dirac_delta(k+266) - 6786*self.dirac_delta(k+267) - 6670*self.dirac_delta(k+268) - 6555*self.dirac_delta(k+269) - 6441*self.dirac_delta(k+270) - 6328*self.dirac_delta(k+271) - 6216*self.dirac_delta(k+272) - 6105*self.dirac_delta(k+273) - 5995*self.dirac_delta(k+274) - 5886*self.dirac_delta(k+275) - 5778*self.dirac_delta(k+276) - 5671*self.dirac_delta(k+277) - 5565*self.dirac_delta(k+278) - 5460*self.dirac_delta(k+279) - 5356*self.dirac_delta(k+280) - 5253*self.dirac_delta(k+281) - 5151*self.dirac_delta(k+282) - 5050*self.dirac_delta(k+283) - 4950*self.dirac_delta(k+284) - 4851*self.dirac_delta(k+285) - 4753*self.dirac_delta(k+286) - 4656*self.dirac_delta(k+287) - 4560*self.dirac_delta(k+288) - 4465*self.dirac_delta(k+289) - 4371*self.dirac_delta(k+290) - 4278*self.dirac_delta(k+291) - 4186*self.dirac_delta(k+292) - 4095*self.dirac_delta(k+293) - 4005*self.dirac_delta(k+294) - 3916*self.dirac_delta(k+295) - 3828*self.dirac_delta(k+296) - 3741*self.dirac_delta(k+297) - 3655*self.dirac_delta(k+298) - 3570*self.dirac_delta(k+299) - 3486*self.dirac_delta(k+300) - 3403*self.dirac_delta(k+301) - 3321*self.dirac_delta(k+302) - 3240*self.dirac_delta(k+303) - 3160*self.dirac_delta(k+304) - 3081*self.dirac_delta(k+305) - 3003*self.dirac_delta(k+306) - 2926*self.dirac_delta(k+307) - 2850*self.dirac_delta(k+308) - 2775*self.dirac_delta(k+309) - 2701*self.dirac_delta(k+310) - 2628*self.dirac_delta(k+311) - 2556*self.dirac_delta(k+312) - 2485*self.dirac_delta(k+313) - 2415*self.dirac_delta(k+314) - 2346*self.dirac_delta(k+315) - 2278*self.dirac_delta(k+316) - 2211*self.dirac_delta(k+317) - 2145*self.dirac_delta(k+318) - 2080*self.dirac_delta(k+319) - 2016*self.dirac_delta(k+320) - 1953*self.dirac_delta(k+321) - 1891*self.dirac_delta(k+322) - 1830*self.dirac_delta(k+323) - 1770*self.dirac_delta(k+324) - 1711*self.dirac_delta(k+325) - 1653*self.dirac_delta(k+326) - 1596*self.dirac_delta(k+327) - 1540*self.dirac_delta(k+328) - 1485*self.dirac_delta(k+329) - 1431*self.dirac_delta(k+330) - 1378*self.dirac_delta(k+331) - 1326*self.dirac_delta(k+332) - 1275*self.dirac_delta(k+333) - 1225*self.dirac_delta(k+334) - 1176*self.dirac_delta(k+335) - 1128*self.dirac_delta(k+336) - 1081*self.dirac_delta(k+337) - 1035*self.dirac_delta(k+338) - 990*self.dirac_delta(k+339) - 946*self.dirac_delta(k+340) - 903*self.dirac_delta(k+341) - 861*self.dirac_delta(k+342) - 820*self.dirac_delta(k+343) - 780*self.dirac_delta(k+344) - 741*self.dirac_delta(k+345) - 703*self.dirac_delta(k+346) - 666*self.dirac_delta(k+347) - 630*self.dirac_delta(k+348) - 595*self.dirac_delta(k+349) - 561*self.dirac_delta(k+350) - 528*self.dirac_delta(k+351) - 496*self.dirac_delta(k+352) - 465*self.dirac_delta(k+353) - 435*self.dirac_delta(k+354) - 406*self.dirac_delta(k+355) - 378*self.dirac_delta(k+356) - 351*self.dirac_delta(k+357) - 325*self.dirac_delta(k+358) - 300*self.dirac_delta(k+359) - 276*self.dirac_delta(k+360) - 253*self.dirac_delta(k+361) - 231*self.dirac_delta(k+362) - 210*self.dirac_delta(k+363) - 190*self.dirac_delta(k+364) - 171*self.dirac_delta(k+365) - 153*self.dirac_delta(k+366) - 136*self.dirac_delta(k+367) - 120*self.dirac_delta(k+368) - 105*self.dirac_delta(k+369) - 91*self.dirac_delta(k+370) - 78*self.dirac_delta(k+371) - 66*self.dirac_delta(k+372) - 55*self.dirac_delta(k+373) - 45*self.dirac_delta(k+374) - 36*self.dirac_delta(k+375) - 28*self.dirac_delta(k+376) - 21*self.dirac_delta(k+377) - 15*self.dirac_delta(k+378) - 10*self.dirac_delta(k+379) - 6*self.dirac_delta(k+380) - 3*self.dirac_delta(k+381) - self.dirac_delta(k+382))
+                for k in k_range: filter_dict[k] = -1/1048576 * (dd(k-127) + 3*dd(k-126) + 6*dd(k-125) + 10*dd(k-124) + 15*dd(k-123) + 21*dd(k-122) + 28*dd(k-121) + 36*dd(k-120) + 45*dd(k-119) + 55*dd(k-118) + 66*dd(k-117) + 78*dd(k-116) + 91*dd(k-115) + 105*dd(k-114) + 120*dd(k-113) + 136*dd(k-112) + 153*dd(k-111) + 171*dd(k-110) + 190*dd(k-109) + 210*dd(k-108) + 231*dd(k-107) + 253*dd(k-106) + 276*dd(k-105) + 300*dd(k-104) + 325*dd(k-103) + 351*dd(k-102) + 378*dd(k-101) + 406*dd(k-100) + 435*dd(k-99) + 465*dd(k-98) + 496*dd(k-97) + 528*dd(k-96) + 561*dd(k-95) + 595*dd(k-94) + 630*dd(k-93) + 666*dd(k-92) + 703*dd(k-91) + 741*dd(k-90) + 780*dd(k-89) + 820*dd(k-88) + 861*dd(k-87) + 903*dd(k-86) + 946*dd(k-85) + 990*dd(k-84) + 1035*dd(k-83) + 1081*dd(k-82) + 1128*dd(k-81) + 1176*dd(k-80) + 1225*dd(k-79) + 1275*dd(k-78) + 1326*dd(k-77) + 1378*dd(k-76) + 1431*dd(k-75) + 1485*dd(k-74) + 1540*dd(k-73) + 1596*dd(k-72) + 1653*dd(k-71) + 1711*dd(k-70) + 1770*dd(k-69) + 1830*dd(k-68) + 1891*dd(k-67) + 1953*dd(k-66) + 2016*dd(k-65) + 2080*dd(k-64) + 2145*dd(k-63) + 2211*dd(k-62) + 2278*dd(k-61) + 2346*dd(k-60) + 2415*dd(k-59) + 2485*dd(k-58) + 2556*dd(k-57) + 2628*dd(k-56) + 2701*dd(k-55) + 2775*dd(k-54) + 2850*dd(k-53) + 2926*dd(k-52) + 3003*dd(k-51) + 3081*dd(k-50) + 3160*dd(k-49) + 3240*dd(k-48) + 3321*dd(k-47) + 3403*dd(k-46) + 3486*dd(k-45) + 3570*dd(k-44) + 3655*dd(k-43) + 3741*dd(k-42) + 3828*dd(k-41) + 3916*dd(k-40) + 4005*dd(k-39) + 4186*dd(k-37) + 4278*dd(k-36) + 4371*dd(k-35) + 4465*dd(k-34) + 4560*dd(k-33) + 4656*dd(k-32) + 4753*dd(k-31) + 4851*dd(k-30) + 4950*dd(k-29) + 5050*dd(k-28) + 5151*dd(k-27) + 5253*dd(k-26) + 5356*dd(k-25) + 5460*dd(k-24) + 5565*dd(k-23) + 5671*dd(k-22) + 5778*dd(k-21) + 5886*dd(k-20) + 5995*dd(k-19) + 6105*dd(k-18) + 6216*dd(k-17) + 6328*dd(k-16) + 6441*dd(k-15) + 6555*dd(k-14) + 6670*dd(k-13) + 6786*dd(k-12) + 6903*dd(k-11) + 7021*dd(k-10) + 7140*dd(k-9) + 7260*dd(k-8) + 7381*dd(k-7) + 7503*dd(k-6) + 7626*dd(k-5) + 7750*dd(k-4) + 7875*dd(k-3) + 8001*dd(k-2) + 8128*dd(k-1) + 8256*dd(k) + 8381*dd(k+1) + 8503*dd(k+2) + 8622*dd(k+3) + 8738*dd(k+4) + 8851*dd(k+5) + 8961*dd(k+6) + 9068*dd(k+7) + 9172*dd(k+8) + 9273*dd(k+9) + 9371*dd(k+10) + 9466*dd(k+11) + 9558*dd(k+12) + 9647*dd(k+13) + 9733*dd(k+14) + 9816*dd(k+15) + 9896*dd(k+16) + 9973*dd(k+17) + 10047*dd(k+18) + 10118*dd(k+19) + 10186*dd(k+20) + 10251*dd(k+21) + 10313*dd(k+22) + 10372*dd(k+23) + 10428*dd(k+24) + 10481*dd(k+25) + 10531*dd(k+26) + 10578*dd(k+27) + 10622*dd(k+28) + 10663*dd(k+29) + 10701*dd(k+30) + 10736*dd(k+31) + 10768*dd(k+32) + 10797*dd(k+33) + 10823*dd(k+34) + 10846*dd(k+35) + 10866*dd(k+36) + 10883*dd(k+37) + 10897*dd(k+38) + 10908*dd(k+39) + 10916*dd(k+40) + 10921*dd(k+41) + 10923*dd(k+42) + 10922*dd(k+43) + 10918*dd(k+44) + 10911*dd(k+45) + 10901*dd(k+46) + 10888*dd(k+47) + 10872*dd(k+48) + 10853*dd(k+49) + 10831*dd(k+50) + 10806*dd(k+51) + 10778*dd(k+52) + 10747*dd(k+53) + 10713*dd(k+54) + 10676*dd(k+55) + 10636*dd(k+56) + 10593*dd(k+57) + 10547*dd(k+58) + 10498*dd(k+59) + 10446*dd(k+60) + 10391*dd(k+61) + 10333*dd(k+62) + 10272*dd(k+63) + 10208*dd(k+64) + 10141*dd(k+65) + 10071*dd(k+66) + 9998*dd(k+67) + 9922*dd(k+68) + 9843*dd(k+69) + 9761*dd(k+70) + 9676*dd(k+71) + 9588*dd(k+72) + 9497*dd(k+73) + 9403*dd(k+74) + 9306*dd(k+75) + 9206*dd(k+76) + 9103*dd(k+77) + 8997*dd(k+78) + 8888*dd(k+79) + 8776*dd(k+80) + 8661*dd(k+81) + 8543*dd(k+82) + 8422*dd(k+83) + 8298*dd(k+84) + 8171*dd(k+85) + 8041*dd(k+86) + 7908*dd(k+87) + 7772*dd(k+88) + 7633*dd(k+89) + 7491*dd(k+90) + 7346*dd(k+91) + 7198*dd(k+92) + 7047*dd(k+93) + 6893*dd(k+94) + 6736*dd(k+95) + 6576*dd(k+96) + 6413*dd(k+97) + 6247*dd(k+98) + 5906*dd(k+100) + 5731*dd(k+101) + 5553*dd(k+102) + 5372*dd(k+103) + 5188*dd(k+104) + 5001*dd(k+105) + 4811*dd(k+106) + 4618*dd(k+107) + 4422*dd(k+108) + 4223*dd(k+109) + 4021*dd(k+110) + 3816*dd(k+111) + 3608*dd(k+112) + 3397*dd(k+113) + 3183*dd(k+114) + 2966*dd(k+115) + 2746*dd(k+116) + 2523*dd(k+117) + 2297*dd(k+118) + 2068*dd(k+119) + 1836*dd(k+120) + 1601*dd(k+121) + 1363*dd(k+122) + 1122*dd(k+123) + 878*dd(k+124) + 631*dd(k+125) + 381*dd(k+126) + 128*dd(k+127) - 128*dd(k+128) - 381*dd(k+129) - 631*dd(k+130) - 878*dd(k+131) - 1122*dd(k+132) - 1363*dd(k+133) - 1601*dd(k+134) - 1836*dd(k+135) - 2068*dd(k+136) - 2297*dd(k+137) - 2523*dd(k+138) - 2746*dd(k+139) - 2966*dd(k+140) - 3183*dd(k+141) - 3397*dd(k+142) - 3608*dd(k+143) - 3816*dd(k+144) - 4021*dd(k+145) - 4223*dd(k+146) - 4422*dd(k+147) - 4618*dd(k+148) - 4811*dd(k+149) - 5001*dd(k+150) - 5188*dd(k+151) - 5372*dd(k+152) - 5553*dd(k+153) - 5731*dd(k+154) - 5906*dd(k+155) - 6078*dd(k+156) - 6247*dd(k+157) - 6413*dd(k+158) - 6576*dd(k+159) - 6736*dd(k+160) - 6893*dd(k+161) - 7047*dd(k+162) - 7198*dd(k+163) - 7346*dd(k+164) - 7491*dd(k+165) - 7633*dd(k+166) - 7772*dd(k+167) - 7908*dd(k+168) - 8041*dd(k+169) - 8171*dd(k+170) - 8298*dd(k+171) - 8422*dd(k+172) - 8543*dd(k+173) - 8661*dd(k+174) - 8776*dd(k+175) - 8888*dd(k+176) - 8997*dd(k+177) - 9103*dd(k+178) - 9206*dd(k+179) - 9306*dd(k+180) - 9403*dd(k+181) - 9497*dd(k+182) - 9588*dd(k+183) - 9676*dd(k+184) - 9761*dd(k+185) - 9843*dd(k+186) - 9922*dd(k+187) - 9998*dd(k+188) - 10071*dd(k+189) - 10141*dd(k+190) - 10208*dd(k+191) - 10272*dd(k+192) - 10333*dd(k+193) - 10391*dd(k+194) - 10446*dd(k+195) - 10498*dd(k+196) - 10547*dd(k+197) - 10593*dd(k+198) - 10636*dd(k+199) - 10676*dd(k+200) - 10713*dd(k+201) - 10747*dd(k+202) - 10778*dd(k+203) - 10806*dd(k+204) - 10831*dd(k+205) - 10853*dd(k+206) - 10872*dd(k+207) - 10888*dd(k+208) - 10901*dd(k+209) - 10911*dd(k+210) - 10918*dd(k+211) - 10922*dd(k+212) - 10923*dd(k+213) - 10921*dd(k+214) - 10916*dd(k+215) - 10908*dd(k+216) - 10897*dd(k+217) - 10883*dd(k+218) - 10866*dd(k+219) - 10846*dd(k+220) - 10823*dd(k+221) - 10797*dd(k+222) - 10768*dd(k+223) - 10736*dd(k+224) - 10701*dd(k+225) - 10663*dd(k+226) - 10622*dd(k+227) - 10578*dd(k+228) - 10531*dd(k+229) - 10481*dd(k+230) - 10428*dd(k+231) - 10372*dd(k+232) - 10313*dd(k+233) - 10251*dd(k+234) - 10186*dd(k+235) - 10118*dd(k+236) - 10047*dd(k+237) - 9973*dd(k+238) - 9896*dd(k+239) - 9816*dd(k+240) - 9733*dd(k+241) - 9647*dd(k+242) - 9558*dd(k+243) - 9466*dd(k+244) - 9371*dd(k+245) - 9273*dd(k+246) - 9172*dd(k+247) - 9068*dd(k+248) - 8961*dd(k+249) - 8851*dd(k+250) - 8738*dd(k+251) - 8622*dd(k+252) - 8503*dd(k+253) - 8381*dd(k+254) - 8256*dd(k+255) - 8128*dd(k+256) - 8001*dd(k+257) - 7875*dd(k+258) - 7750*dd(k+259) - 7626*dd(k+260) - 7503*dd(k+261) - 7381*dd(k+262) - 7260*dd(k+263) - 7140*dd(k+264) - 7021*dd(k+265) - 6903*dd(k+266) - 6786*dd(k+267) - 6670*dd(k+268) - 6555*dd(k+269) - 6441*dd(k+270) - 6328*dd(k+271) - 6216*dd(k+272) - 6105*dd(k+273) - 5995*dd(k+274) - 5886*dd(k+275) - 5778*dd(k+276) - 5671*dd(k+277) - 5565*dd(k+278) - 5460*dd(k+279) - 5356*dd(k+280) - 5253*dd(k+281) - 5151*dd(k+282) - 5050*dd(k+283) - 4950*dd(k+284) - 4851*dd(k+285) - 4753*dd(k+286) - 4656*dd(k+287) - 4560*dd(k+288) - 4465*dd(k+289) - 4371*dd(k+290) - 4278*dd(k+291) - 4186*dd(k+292) - 4095*dd(k+293) - 4005*dd(k+294) - 3916*dd(k+295) - 3828*dd(k+296) - 3741*dd(k+297) - 3655*dd(k+298) - 3570*dd(k+299) - 3486*dd(k+300) - 3403*dd(k+301) - 3321*dd(k+302) - 3240*dd(k+303) - 3160*dd(k+304) - 3081*dd(k+305) - 3003*dd(k+306) - 2926*dd(k+307) - 2850*dd(k+308) - 2775*dd(k+309) - 2701*dd(k+310) - 2628*dd(k+311) - 2556*dd(k+312) - 2485*dd(k+313) - 2415*dd(k+314) - 2346*dd(k+315) - 2278*dd(k+316) - 2211*dd(k+317) - 2145*dd(k+318) - 2080*dd(k+319) - 2016*dd(k+320) - 1953*dd(k+321) - 1891*dd(k+322) - 1830*dd(k+323) - 1770*dd(k+324) - 1711*dd(k+325) - 1653*dd(k+326) - 1596*dd(k+327) - 1540*dd(k+328) - 1485*dd(k+329) - 1431*dd(k+330) - 1378*dd(k+331) - 1326*dd(k+332) - 1275*dd(k+333) - 1225*dd(k+334) - 1176*dd(k+335) - 1128*dd(k+336) - 1081*dd(k+337) - 1035*dd(k+338) - 990*dd(k+339) - 946*dd(k+340) - 903*dd(k+341) - 861*dd(k+342) - 820*dd(k+343) - 780*dd(k+344) - 741*dd(k+345) - 703*dd(k+346) - 666*dd(k+347) - 630*dd(k+348) - 595*dd(k+349) - 561*dd(k+350) - 528*dd(k+351) - 496*dd(k+352) - 465*dd(k+353) - 435*dd(k+354) - 406*dd(k+355) - 378*dd(k+356) - 351*dd(k+357) - 325*dd(k+358) - 300*dd(k+359) - 276*dd(k+360) - 253*dd(k+361) - 231*dd(k+362) - 210*dd(k+363) - 190*dd(k+364) - 171*dd(k+365) - 153*dd(k+366) - 136*dd(k+367) - 120*dd(k+368) - 105*dd(k+369) - 91*dd(k+370) - 78*dd(k+371) - 66*dd(k+372) - 55*dd(k+373) - 45*dd(k+374) - 36*dd(k+375) - 28*dd(k+376) - 21*dd(k+377) - 15*dd(k+378) - 10*dd(k+379) - 6*dd(k+380) - 3*dd(k+381) - dd(k+382))
+            
             qj_filters[j] = filter_dict
         return qj_filters
     
     def calculate_qj_frequency_responses(self, fs):
-        h = {n: 1/8 * (self.dirac_delta(n-1) + 3*self.dirac_delta(n) + 3*self.dirac_delta(n+1) + self.dirac_delta(n+2)) for n in range(-2, 2)}
-        g = {n: -2 * (self.dirac_delta(n) - self.dirac_delta(n+1)) for n in range(-2, 2)}
+        """
+        Menghitung Respons Frekuensi dengan FFT pada Impulse Response.
+        Match dengan visualisasi Delphi: Frequency Axis = 0 s/d Nyquist.
+        """
+        responses = {}
+        nfft = 2048
+        half = nfft // 2
         
-        # [PLOT FIX] Use a single high-resolution internal FS for generating templates
-        internal_fs = 2048 
-        num_base_points = int(internal_fs * 128) # Ensure it's large enough for high-order scaling
-        Hw, Gw = np.zeros(num_base_points), np.zeros(num_base_points)
-        base_freqs = np.linspace(0, internal_fs, num_base_points, endpoint=False)
-
-        for i in range(num_base_points):
-            reH, imH, reG, imG = 0, 0, 0, 0
-            for k_idx in range(-2, 2):
-                angle = 2 * np.pi * base_freqs[i] * k_idx / internal_fs
-                reH += h[k_idx] * np.cos(angle); imH -= h[k_idx] * np.sin(angle)
-                reG += g[k_idx] * np.cos(angle); imG -= g[k_idx] * np.sin(angle)
-            Hw[i] = np.sqrt(reH**2 + imH**2)
-            Gw[i] = np.sqrt(reG**2 + imG**2)
-
-        num_final_points = round(fs / 2) + 1
-        final_freqs = np.linspace(0, fs / 2, num_final_points)
-        Q = np.zeros((9, num_final_points))
-
-        for i in range(num_final_points):
-            f = final_freqs[i]
+        for j in range(1, 9):
+            if j not in self.qj_time_coeffs: continue
             
-            def get_val(arr, freq):
-                # Map absolute frequency (Hz) to the correct index in the high-res template
-                idx = int(round(freq * num_base_points / internal_fs))
-                return arr[idx] if idx < len(arr) else 0
-
-            h_vals = {2**p: get_val(Hw, (2**p)*f) for p in range(7)}
+            filter_dict = self.qj_time_coeffs[j]
+            min_k = min(filter_dict.keys())
+            max_k = max(filter_dict.keys())
             
-            Q[1][i] = get_val(Gw, f)
-            Q[2][i] = get_val(Gw, 2*f) * h_vals[1]
-            Q[3][i] = get_val(Gw, 4*f) * h_vals[2] * h_vals[1]
-            Q[4][i] = get_val(Gw, 8*f) * h_vals[4] * h_vals[2] * h_vals[1]
-            Q[5][i] = get_val(Gw, 16*f) * h_vals[8] * h_vals[4] * h_vals[2] * h_vals[1]
-            Q[6][i] = get_val(Gw, 32*f) * h_vals[16] * h_vals[8] * h_vals[4] * h_vals[2] * h_vals[1]
-            Q[7][i] = get_val(Gw, 64*f) * h_vals[32] * h_vals[16] * h_vals[8] * h_vals[4] * h_vals[2] * h_vals[1]
-            Q[8][i] = get_val(Gw, 128*f) * h_vals[64] * h_vals[32] * h_vals[16] * h_vals[8] * h_vals[4] * h_vals[2] * h_vals[1]
-        
-        return {j: (final_freqs, Q[j]) for j in range(1, 9)}
+            # Buat buffer impulse response zero-padded
+            padded_signal = np.zeros(nfft)
+            
+            # Masukkan koefisien ke buffer
+            for k, val in filter_dict.items():
+                idx = k - min_k
+                if 0 <= idx < nfft:
+                    padded_signal[idx] = val
+            
+            # FFT
+            fft_out = np.fft.fft(padded_signal)
+            mags = np.abs(fft_out)[:half]
+            freqs = np.linspace(0, fs/2, half)
+            
+            responses[j] = (freqs, mags)
+            
+        return responses
 
     def fft_from_scratch(self, signal):
-        N = len(signal)
-        if N <= 1: return np.array(signal, dtype=np.complex128)
-        if N & (N - 1) != 0:
-            next_pow2 = 1 << (N - 1).bit_length()
-            padded_signal = np.pad(signal, (0, next_pow2 - N), 'constant')
-            N = next_pow2
-        else:
-            padded_signal = np.array(signal, dtype=np.complex128)
-        even = self.fft_from_scratch(padded_signal[0::2])
-        odd = self.fft_from_scratch(padded_signal[1::2])
-        twiddle_factors = np.exp(-2j * np.pi * np.arange(N // 2) / N)
-        term = twiddle_factors * odd
-        return np.concatenate([even + term, even - term])
+        return fft_from_scratch(signal)
 
     def fft_magnitude_and_frequencies(self, signal):
         fft_complex = self.fft_from_scratch(signal)
         N = len(fft_complex)
         if N == 0: return np.array([]), np.array([])
+        
         magnitude = np.abs(fft_complex)[:N//2] * 2 / N
         if N > 0: magnitude[0] /= 2
+        
         frequencies = np.fft.fftfreq(N, 1.0/self.fs)[:N//2]
         return frequencies, magnitude
 
@@ -244,22 +489,42 @@ class PPGStressAnalyzer:
         for j in range(1, max_scale + 1):
             if j in self.qj_time_coeffs:
                 q_filter_dict = self.qj_time_coeffs[j]
-                min_k, max_k = min(q_filter_dict.keys()), max(q_filter_dict.keys())
-                filter_coeffs = [q_filter_dict.get(k, 0) for k in range(min_k, max_k + 1)]
-                dwt_coeffs[j] = np.convolve(signal, filter_coeffs, mode='same')
+                min_k = min(q_filter_dict.keys())
+                max_k = max(q_filter_dict.keys())
+                kernel = [q_filter_dict.get(k, 0) for k in range(min_k, max_k + 1)]
+                dwt_coeffs[j] = np.convolve(signal, kernel, mode='same')
         return dwt_coeffs
     
     def load_ppg_data(self, csv_file, ppg_column_name):
         try:
             df = pd.read_csv(csv_file)
-            time_col = next((col for col in df.columns if 'time' in col.lower()), None)
-            if time_col is None or ppg_column_name not in df.columns:
-                 raise ValueError(f"Could not find Time column or '{ppg_column_name}' column.")
-            time, ppg_signal = df[time_col].values, df[ppg_column_name].values
-            valid_indices = np.isfinite(time) & np.isfinite(ppg_signal)
-            time, ppg_signal = time[valid_indices], ppg_signal[valid_indices]
-            if len(time) < 2: raise ValueError("Not enough valid data points.")
-            self.original_fs = self.fs = len(time) / (time[-1] - time[0])
+            df.columns = [c.strip().lower() for c in df.columns]
+            target_col = ppg_column_name.strip().lower()
+            
+            time_col = next((col for col in df.columns if 'time' in col or 'index' in col), None)
+            
+            if target_col not in df.columns: raise ValueError(f"Column '{ppg_column_name}' not found.")
+            
+            if time_col:
+                time = df[time_col].values
+            else:
+                time = np.arange(len(df)) / 50.0 # Default if no time
+                self.fs = 50.0
+                
+            ppg_signal = df[target_col].values
+            valid_mask = np.isfinite(time) & np.isfinite(ppg_signal)
+            time = time[valid_mask]
+            ppg_signal = ppg_signal[valid_mask]
+            
+            if len(time) < 2: raise ValueError("Not enough data.")
+            
+            # --- CRITICAL FIX: Calculate Real FS ---
+            duration = time[-1] - time[0]
+            if duration > 0:
+                self.original_fs = self.fs = (len(time) - 1) / duration
+            else:
+                self.fs = 50.0
+                
             return time, ppg_signal
         except Exception as e:
             print(f"Error loading data: {e}"); return None, None
@@ -268,100 +533,206 @@ class PPGStressAnalyzer:
         if factor <= 1:
             self.fs = self.original_fs
             return signal, time
-        self.fs = self.original_fs / factor
-        return signal[::factor], time[::factor]
+        
+        ds_signal = signal[::factor]
+        ds_time = time[::factor]
+        
+        if len(ds_time) > 1:
+            self.fs = (len(ds_time) - 1) / (ds_time[-1] - ds_time[0])
+        else:
+            self.fs = self.original_fs / factor
+            
+        return ds_signal, ds_time
 
 class HRV_Analyzer:
     def __init__(self, signal, time_vector, fs, fft_function):
-        self.raw_signal, self.time, self.fs, self.fft_func = np.array(signal), np.array(time_vector), fs, fft_function
-        self.preprocessed_signal, self.peaks, self.minima, self.rr_intervals = None, None, None, None
+        self.raw_signal = np.array(signal)
+        self.time = np.array(time_vector)
+        self.fs = fs
+        self.fft_func = fft_function
+        
+        # State
+        self.preprocessed_signal = None
+        self.peaks = None
+        self.minima = None
+        self.zero_crossings = None
+        self.rr_intervals = None
+        self.peak_times = None
 
-    def _preprocess_and_filter(self, lowcut=0.5, highcut=4.0):
-        window_size = int(1.0 * self.fs)
+    def _preprocess_and_filter(self):
+        """
+        Pre-processing Pipeline:
+        1. Remove Baseline
+        2. Filter Custom (0.5 - 8.0 Hz)
+        3. Normalize (CRITICAL FIX: signal / std) -> Enables Peak Detection!
+        """
+        # 1. Baseline Removal
+        window_size = int(self.fs)
         if window_size % 2 == 0: window_size += 1
-        signal_no_baseline = self.raw_signal - np.convolve(self.raw_signal, np.ones(window_size)/window_size, mode='same') if len(self.raw_signal) > window_size else self.raw_signal
-        signal_no_dc = signal_no_baseline - np.mean(signal_no_baseline)
         
-        filtered_signal = signal_no_dc
-        if (0.5 * self.fs) > highcut:
-            b, a = manual_butter_bandpass(lowcut, highcut, self.fs, order=2)
-            filtered_signal = manual_lfilter(b, a, signal_no_dc)
-        
-        # [AMPLITUDE FIX] Normalize the output signal to have a std of 1
-        sig_std = np.std(filtered_signal)
-        if sig_std > 0:
-            self.preprocessed_signal = filtered_signal / sig_std
+        if len(self.raw_signal) > window_size:
+            baseline = np.convolve(self.raw_signal, np.ones(window_size)/window_size, mode='same')
+            sig_no_base = self.raw_signal - baseline
         else:
-            self.preprocessed_signal = filtered_signal
+            sig_no_base = self.raw_signal
+            
+        # 2. Filter
+        filtered = filter_custom_ref(sig_no_base, self.fs, 0.5, 8.0)
+        
+        # 3. Normalization (Agar threshold peak detection di 0.3 dsb valid)
+        std_val = np.std(filtered)
+        if std_val > 0:
+            self.preprocessed_signal = filtered / std_val
+        else:
+            self.preprocessed_signal = filtered
 
     def _detect_peaks(self):
         if self.preprocessed_signal is None: return
-        # Thresholds are now robust due to normalization in preprocessing
-        peaks = manual_find_peaks(self.preprocessed_signal, distance=int(self.fs * 0.33), height=0.3, prominence=0.3)
-        if len(peaks) < 2: self.peaks = peaks; return
-        rr_s = np.diff(self.time[peaks])
-        median_rr = np.median(rr_s)
-        final_mask = np.ones_like(peaks, dtype=bool)
-        for i in range(len(rr_s)):
-            if not (0.5 * median_rr < rr_s[i] < 1.5 * median_rr):
-                final_mask[i if self.preprocessed_signal[peaks[i]] < self.preprocessed_signal[peaks[i+1]] else i+1] = False
-        self.peaks = peaks[final_mask]
-        if len(self.peaks) > 1: self.rr_intervals = np.diff(self.time[self.peaks])
-
-    def _detect_minima(self):
-        if self.peaks is None or len(self.peaks) < 2: self.minima = np.array([], dtype=int); return
-        minima_indices = [self.peaks[i] + np.argmin(self.preprocessed_signal[self.peaks[i]:self.peaks[i+1]]) for i in range(len(self.peaks) - 1) if self.peaks[i+1] > self.peaks[i]]
-        self.minima = np.array(minima_indices, dtype=int)
+        
+        max_idx, min_idx, zero_idx, _ = analyze_signal_zero_crossing(self.preprocessed_signal, self.time, 0.0)
+        self.peaks = max_idx
+        self.minima = min_idx
+        self.zero_crossings = zero_idx
+        
+        if len(self.peaks) > 1:
+            self.peak_times = self.time[self.peaks]
+            # Delphi Logic: RR Interval adalah selisih waktu antar puncak berurutan
+            self.rr_intervals = np.diff(self.peak_times)
 
     def _calculate_time_domain_features(self):
-        results = defaultdict(lambda: 0); results['rr_histogram'] = (np.array([]), np.array([]))
-        if self.rr_intervals is None or len(self.rr_intervals) < 2: return results
-        rr_ms = self.rr_intervals * 1000
+        res = defaultdict(lambda: 0)
+        res['rr_histogram'] = (np.array([]), np.array([]))
+        if self.rr_intervals is None: return res
+        
+        # Sanitasi Data (0.3s - 2.0s)
+        clean_rr = [rr for rr in self.rr_intervals if 0.30 <= rr <= 2.0]
+        if len(clean_rr) < 5: return res
+        
+        rr_ms = np.array(clean_rr) * 1000.0
+        
         mean_nn = np.mean(rr_ms)
-        nn50 = np.sum(np.abs(np.diff(rr_ms)) > 50)
-        results.update({'mean_nn': mean_nn, 'sdnn': np.std(rr_ms, ddof=1), 'sdsd': np.std(np.diff(rr_ms), ddof=1), 'rmssd': np.sqrt(np.mean(np.diff(rr_ms)**2)), 'nn50': nn50, 'pnn50': (nn50 / (len(rr_ms) - 1)) * 100 if len(rr_ms) > 1 else 0, 'mean_hr': 60000 / mean_nn if mean_nn > 0 else 0})
-        if mean_nn > 0: results['cvnn'], results['cvsd'] = results['sdnn'] / mean_nn, results['rmssd'] / mean_nn
-        if results['sdnn'] > 0: results['skewness'] = np.sum(((rr_ms - mean_nn) / results['sdnn']) ** 3) / len(rr_ms)
-        if len(rr_ms) > 1:
-            hist_c, hist_b = np.histogram(rr_ms, bins=np.arange(np.min(rr_ms), np.max(rr_ms) + 7.8125, 7.8125)); results['rr_histogram'] = (hist_c, hist_b)
-            if hist_c.size > 0 and (h_max := np.max(hist_c)) > 0: results['hti'] = len(rr_ms) / h_max
-            if (nz_idx := np.where(hist_c > 0)[0]).size > 1: results['tinn'] = hist_b[nz_idx[-1] + 1] - hist_b[nz_idx[0]]
-        peak_times = self.time[self.peaks]
-        if len(peak_times) > 1 and (peak_times[-1] - peak_times[0]) > 300:
-            s_means, s_stds, s_start = [], [], peak_times[0]
-            while s_start < peak_times[-1]:
-                s_end = s_start + 300
-                rr_idx = [i for i, pk_idx in enumerate(self.peaks[1:]) if s_start <= self.time[self.peaks[i+1]] < s_end]
-                if len(rr_idx) > 1: s_means.append(np.mean(self.rr_intervals[rr_idx]*1000)); s_stds.append(np.std(self.rr_intervals[rr_idx]*1000, ddof=1))
-                s_start = s_end
-            if len(s_means) > 1: results['sdann'] = np.std(s_means, ddof=1)
-            if len(s_stds) > 0: results['sdnn_index'] = np.mean(s_stds)
-        return results
+        sdnn = np.std(rr_ms, ddof=1)
+        diffs = np.diff(rr_ms)
+        rmssd = np.sqrt(np.mean(diffs**2))
+        sdsd = np.std(diffs, ddof=1)
+        nn50 = np.sum(np.abs(diffs) > 50)
+        pnn50 = (nn50 / len(diffs)) * 100 if len(diffs) > 0 else 0
+        
+        skew = np.sum(((rr_ms - mean_nn) / sdnn)**3) / len(rr_ms) if sdnn > 0 else 0
+            
+        res.update({
+            'mean_hr': 60000 / mean_nn if mean_nn > 0 else 0,
+            'sdnn': sdnn,
+            'rmssd': rmssd,
+            'sdsd': sdsd,
+            'nn50': nn50,
+            'pnn50': pnn50,
+            'cvnn': sdnn / mean_nn if mean_nn > 0 else 0,
+            'cvsd': rmssd / mean_nn if mean_nn > 0 else 0,
+            'skewness': skew
+        })
+        
+        # Histogram (Bin Width 50ms)
+        min_rr, max_rr = np.min(rr_ms), np.max(rr_ms)
+        bin_width = 50.0
+        bins = np.arange(min_rr, max_rr + bin_width, bin_width)
+        counts, bin_edges = np.histogram(rr_ms, bins=bins)
+        res['rr_histogram'] = (counts, bin_edges)
+        
+        if (max_count := np.max(counts)) > 0:
+            res['hti'] = len(rr_ms) / max_count
+            non_zero = np.where(counts > 0)[0]
+            if len(non_zero) > 1:
+                res['tinn'] = bin_edges[non_zero[-1]+1] - bin_edges[non_zero[0]]
+                
+        # SDANN
+        total_duration = self.peak_times[-1] - self.peak_times[0]
+        segment_win = 300 if total_duration >= 300 else (60 if total_duration >= 60 else total_duration)
+        if segment_win > 0:
+            s_means, s_stds, curr = [], [], self.peak_times[0]
+            while curr + segment_win <= self.peak_times[-1]:
+                window_rrs = []
+                for i, t in enumerate(self.peak_times[:-1]):
+                    if t >= curr and t < curr + segment_win and 0.3 <= self.rr_intervals[i] <= 2.0:
+                        window_rrs.append(self.rr_intervals[i] * 1000)
+                if len(window_rrs) > 2:
+                    s_means.append(np.mean(window_rrs))
+                    s_stds.append(np.std(window_rrs, ddof=1))
+                curr += segment_win
+            if len(s_means) > 1: res['sdann'] = np.std(s_means, ddof=1)
+            if len(s_stds) > 0: res['sdnn_index'] = np.mean(s_stds)
+                
+        return res
 
     def _calculate_frequency_domain_features(self, interp_fs=4.0):
-        defaults = defaultdict(lambda: 0, {'psd_freqs': None, 'psd_values': None})
-        if self.rr_intervals is None or len(self.rr_intervals) < 8: return defaults
-        peak_times = self.time[self.peaks][1:]
-        interp_time = np.arange(peak_times[0], peak_times[-1], 1.0 / interp_fs)
-        if len(interp_time) < 2: return defaults
-        interp_rr = np.interp(interp_time, peak_times, self.rr_intervals)
-        freqs, psd = welch_from_scratch(interp_rr - np.mean(interp_rr), interp_fs, segment_len=min(256, len(interp_rr)), fft_func=self.fft_func)
-        if freqs.size == 0: return defaults
-        lf_mask, hf_mask = (freqs >= 0.04) & (freqs < 0.15), (freqs >= 0.15) & (freqs < 0.4)
-        lf_power = np.trapz(psd[lf_mask], freqs[lf_mask]) if np.any(lf_mask) else 0
-        hf_power = np.trapz(psd[hf_mask], freqs[hf_mask]) if np.any(hf_mask) else 0
-        total_power = np.trapz(psd[freqs < 0.4], freqs[freqs < 0.4]) if np.any(freqs < 0.4) else 0
-        lf_hf_sum = lf_power + hf_power
-        return {'psd_freqs': freqs, 'psd_values': psd, 'total_power': total_power, 'lf_power': lf_power, 'hf_power': hf_power, 'lf_hf_ratio': lf_power / hf_power if hf_power > 0 else np.inf, 'lf_nu': (lf_power / lf_hf_sum) * 100 if lf_hf_sum > 0 else 0, 'hf_nu': (hf_power / lf_hf_sum) * 100 if lf_hf_sum > 0 else 0, 'peak_lf': freqs[lf_mask][np.argmax(psd[lf_mask])] if np.any(lf_mask) and np.any(psd[lf_mask]) else 0, 'peak_hf': freqs[hf_mask][np.argmax(psd[hf_mask])] if np.any(hf_mask) and np.any(psd[hf_mask]) else 0}
+        defaults = defaultdict(lambda: 0, {'psd_freqs': np.array([]), 'psd_values': np.array([])})
+        if self.rr_intervals is None: return defaults
+        
+        valid_indices = [i for i, rr in enumerate(self.rr_intervals) if 0.3 <= rr <= 2.0]
+        if len(valid_indices) < 5: return defaults
+        
+        clean_rr = self.rr_intervals[valid_indices]
+        clean_times = self.peak_times[valid_indices]
+        
+        # Cubic Spline Interpolation (Manual Implementation matching Delphi)
+        t_start, t_end = clean_times[0], clean_times[-1]
+        t_interp = np.arange(t_start, t_end, 1.0/interp_fs)
+        if len(t_interp) < 2: return defaults
+        
+        rr_interp = cubic_spline_interpolate(clean_times, clean_rr, t_interp)
+        rr_detrend = linear_detrend(rr_interp)
+        
+        freqs, psd = welch_from_scratch(rr_detrend, interp_fs, segment_len=min(512, len(rr_detrend)))
+        if len(freqs) < 2: return defaults
+        
+        psd_ms2 = psd * 1e6 # s^2 -> ms^2
+        freq_step = freqs[1] - freqs[0]
+        
+        lf_mask = (freqs >= 0.04) & (freqs < 0.15)
+        hf_mask = (freqs >= 0.15) & (freqs < 0.5)
+        
+        lf_pow = np.sum(psd_ms2[lf_mask]) * freq_step
+        hf_pow = np.sum(psd_ms2[hf_mask]) * freq_step
+        total_pow = np.sum(psd_ms2[(freqs >= 0.0033) & (freqs < 0.5)]) * freq_step
+        
+        res = {
+            'psd_freqs': freqs, 'psd_values': psd_ms2,
+            'total_power': total_pow, 'lf_power': lf_pow, 'hf_power': hf_pow,
+            'peak_lf': freqs[lf_mask][np.argmax(psd_ms2[lf_mask])] if np.any(lf_mask) else 0,
+            'peak_hf': freqs[hf_mask][np.argmax(psd_ms2[hf_mask])] if np.any(hf_mask) else 0
+        }
+        
+        if hf_pow > 0: res['lf_hf_ratio'] = lf_pow / hf_pow
+        if (denom := lf_pow + hf_pow) > 0:
+            res['lf_nu'] = (lf_pow / denom) * 100
+            res['hf_nu'] = (hf_pow / denom) * 100
+            
+        return res
 
     def _calculate_nonlinear_features(self):
-        if self.rr_intervals is None or len(self.rr_intervals) < 2: return {'poincare_x':[],'poincare_y':[],'sd1':0,'sd2':0,'sd1_sd2_ratio':0}
-        rr_n, rr_n1 = self.rr_intervals[:-1], self.rr_intervals[1:]
-        sd1, sd2 = np.std(np.subtract(rr_n, rr_n1)/np.sqrt(2), ddof=1), np.std(np.add(rr_n, rr_n1)/np.sqrt(2), ddof=1)
-        return {'poincare_x': rr_n * 1000, 'poincare_y': rr_n1 * 1000, 'sd1': sd1 * 1000, 'sd2': sd2 * 1000, 'sd1_sd2_ratio': sd1 / sd2 if sd2 > 0 else 0}
+        if self.rr_intervals is None: return {'poincare_x':[],'poincare_y':[],'sd1':0,'sd2':0,'sd1_sd2_ratio':0}
+        valid = [rr for rr in self.rr_intervals if 0.3 <= rr <= 2.0]
+        if len(valid) < 2: return {'poincare_x':[],'poincare_y':[],'sd1':0,'sd2':0,'sd1_sd2_ratio':0}
+            
+        rr_n = np.array(valid[:-1]) * 1000
+        rr_n1 = np.array(valid[1:]) * 1000
+        diff, summ = (rr_n - rr_n1) / np.sqrt(2), (rr_n + rr_n1) / np.sqrt(2)
+        sd1, sd2 = np.std(diff, ddof=1), np.std(summ, ddof=1)
+        
+        return {
+            'poincare_x': rr_n, 'poincare_y': rr_n1,
+            'sd1': sd1, 'sd2': sd2,
+            'sd1_sd2_ratio': sd1 / sd2 if sd2 > 0 else 0
+        }
 
     def run_all_analyses(self):
         self._preprocess_and_filter()
         self._detect_peaks()
-        self._detect_minima()
-        return {"peaks": self.peaks, "minima": self.minima, "rr_intervals_s": self.rr_intervals, "rr_times": self.time[self.peaks] if self.peaks is not None and len(self.peaks) > 0 else np.array([]), "time_domain": self._calculate_time_domain_features(), "frequency_domain": self._calculate_frequency_domain_features(), "nonlinear": self._calculate_nonlinear_features()}
+        return {
+            "peaks": self.peaks, "minima": self.minima,
+            "rr_intervals_s": self.rr_intervals,
+            "rr_times": self.peak_times if self.peak_times is not None else np.array([]),
+            "time_domain": self._calculate_time_domain_features(),
+            "frequency_domain": self._calculate_frequency_domain_features(),
+            "nonlinear": self._calculate_nonlinear_features()
+        }
