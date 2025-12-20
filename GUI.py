@@ -2,11 +2,14 @@
 GUI.py
 
 Purpose:
-    - Main User Interface for EEG Analysis BCI Project (Version 4.0).
+    - Main User Interface for EEG Analysis BCI Project (Version 5.1).
+    - Orchestrates the full pipeline: 
+      Load -> Inspect -> CWT -> Filter -> Square -> Avg -> Smooth -> ERD -> CSP -> ML.
     - Features:
-        1. Epoch Inspector (View raw trials C3/Cz/C4).
-        2. Signal Processing Pipeline (CWT -> ERD).
-        3. Machine Learning (CSP -> 8 Classifiers).
+        * Robust Layout Management.
+        * Interactive Epoch Inspector.
+        * Detailed ML Performance Visualization.
+        * Full Matplotlib Interactivity.
     - Theme: Retro Hacker Terminal (Dark Mode).
 
 Dependencies:
@@ -19,14 +22,15 @@ Dependencies:
 import sys
 import os
 import numpy as np
-import shutil
 
 # PyQt6 Components
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QPushButton, QLabel, QTabWidget, 
-                             QFileDialog, QLineEdit, QComboBox, QMessageBox, 
-                             QGroupBox, QTextEdit, QSizePolicy, QSpinBox)
-from PyQt6.QtGui import QFont, QColor, QPalette
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+    QPushButton, QLabel, QTabWidget, QFileDialog, QLineEdit, 
+    QComboBox, QMessageBox, QGroupBox, QTextEdit, QSpinBox, 
+    QSplitter, QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView
+)
+from PyQt6.QtGui import QFont, QColor, QPalette, QIcon
 from PyQt6.QtCore import Qt
 
 # Matplotlib Components
@@ -59,8 +63,8 @@ class PlotWidget(QWidget):
         
         # Main Vertical Layout
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(0)
+        self.layout.setContentsMargins(2, 2, 2, 2)
+        self.layout.setSpacing(2)
 
         # Initialize Figure with Dark Background
         self.fig = Figure(figsize=(width, height), dpi=dpi)
@@ -76,7 +80,7 @@ class PlotWidget(QWidget):
         
         # Initialize Toolbar
         self.toolbar = NavigationToolbar(self.canvas, self)
-        self.toolbar.setStyleSheet("background-color: #262626; color: white; border: none;")
+        self.toolbar.setStyleSheet("background-color: #262626; color: white; border: 1px solid #333;")
 
         # Add to Layout
         self.layout.addWidget(self.toolbar)
@@ -102,7 +106,7 @@ class PlotWidget(QWidget):
         """
         Applies high-contrast styling to the axes (White text on Black bg).
         """
-        ax.set_title(title, color='white', fontsize=10, fontweight='bold')
+        ax.set_title(title, color='white', fontsize=10, fontweight='bold', pad=10)
         ax.set_xlabel(xlabel, color='white', fontsize=9)
         ax.set_ylabel(ylabel, color='white', fontsize=9)
         
@@ -130,13 +134,15 @@ class EEGAnalysisWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("SYSTEM::EEG_ANALYSIS_CORE_V4.0 [FULL SUITE]")
-        self.setGeometry(50, 50, 1450, 950)
+        self.setWindowTitle("SYSTEM::EEG_ANALYSIS_CORE_V5.1 [FULL SUITE]")
+        self.setGeometry(50, 50, 1600, 1000)
 
         # -- GLOBAL DATA VARIABLES --
         self.raw_mne = None
         self.fs = 250.0
         self.events = None
+        self.event_id_map = None
+        self.session_info = None
         self.raw_data_array = None   # Shape: (Channels, Samples)
         self.filtered_data = None
         self.squared_data = None
@@ -154,7 +160,7 @@ class EEGAnalysisWindow(QMainWindow):
         self.ml_pipeline = ml_analysis.ML_Pipeline()
         self.ml_epochs = None
         self.ml_labels = None
-        self.ml_results = {} 
+        self.ml_metrics = {} 
 
         # Apply Theme
         self.apply_hacker_theme()
@@ -189,7 +195,7 @@ class EEGAnalysisWindow(QMainWindow):
         self.log_console.setStyleSheet("border: 1px solid #00ff41; color: #00ff41; background-color: #000; font-family: Consolas;")
         main_layout.addWidget(self.log_console)
         
-        self.log("SYSTEM V4.0 ONLINE. ALL MODULES LOADED.")
+        self.log("SYSTEM V5.1 ONLINE. ALL MODULES LOADED.")
 
     def apply_hacker_theme(self):
         style = """
@@ -202,8 +208,11 @@ class EEGAnalysisWindow(QMainWindow):
         QPushButton:hover { background-color: #00ff41; color: #000; }
         QLineEdit, QComboBox, QSpinBox { background-color: #000; border: 1px solid #00ff41; color: #fff; padding: 4px; }
         QComboBox QAbstractItemView { background-color: #000; color: #00ff41; selection-background-color: #00ff41; selection-color: #000; }
-        QGroupBox { border: 1px solid #00ff41; margin-top: 15px; font-weight: bold; }
+        QGroupBox { border: 1px solid #00ff41; margin-top: 10px; font-weight: bold; }
         QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; padding: 0 5px; background-color: #0d0d0d; }
+        QTableWidget { gridline-color: #00ff41; color: #fff; }
+        QHeaderView::section { background-color: #1a1a1a; color: #00ff41; border: 1px solid #00ff41; }
+        QScrollArea { border: none; }
         """
         self.setStyleSheet(style)
 
@@ -250,7 +259,8 @@ class EEGAnalysisWindow(QMainWindow):
         self.erd_right = None
         self.ml_epochs = None
         self.ml_labels = None
-        self.ml_results = {}
+        self.ml_metrics = {}
+        self.session_info = None
         
         # Clear Plots
         self.plot_raw.clear_plot()
@@ -260,32 +270,38 @@ class EEGAnalysisWindow(QMainWindow):
         self.plot_avg.clear_plot()
         self.plot_smooth.clear_plot()
         self.plot_erd.clear_plot()
-        self.plot_csp.clear_plot()
-        self.plot_ml.clear_plot()
+        self.plot_csp_scatter.clear_plot()
+        self.plot_temp_box.clear_plot()
+        self.plot_ml_bar.clear_plot()
+        self.plot_ml_cm.clear_plot()
+        self.plot_ml_perf.clear_plot()
         
         self.lbl_file_status.setText("STATUS: IDLE")
         self.txt_ml_results.clear()
-        self.combo_ml_plot.clear()
+        self.table_ml_details.setRowCount(0)
         
         self.log("SYSTEM MEMORY FLUSHED.")
 
     # =========================================================
-    # TAB 1: INGESTION & EPOCH INSPECTOR (NEW)
+    # TAB 1: INGESTION & EPOCH INSPECTOR
     # =========================================================
     def init_tab_load(self):
         tab = QWidget()
         layout = QVBoxLayout()
         
-        # Row 1: File Loading
+        # -- Controls Row --
         h_load = QHBoxLayout()
         self.btn_load = QPushButton("[ 1. SELECT GDF FILE ]")
         self.btn_load.clicked.connect(self.load_data)
         self.lbl_file_status = QLabel("STATUS: IDLE")
+        self.lbl_session_type = QLabel("SESSION: UNKNOWN")
         h_load.addWidget(self.btn_load)
         h_load.addWidget(self.lbl_file_status)
+        h_load.addStretch()
+        h_load.addWidget(self.lbl_session_type)
         layout.addLayout(h_load)
         
-        # Row 2: Epoch Settings (Interactive)
+        # -- Epoch Inspector Controls --
         g_insp = QGroupBox("EPOCH INSPECTOR (VISUALIZE TRIALS)")
         h_insp = QHBoxLayout()
         
@@ -317,7 +333,7 @@ class EEGAnalysisWindow(QMainWindow):
         g_insp.setLayout(h_insp)
         layout.addWidget(g_insp)
 
-        # Plot
+        # -- Plot --
         self.plot_raw = PlotWidget(self)
         layout.addWidget(self.plot_raw)
         
@@ -329,19 +345,23 @@ class EEGAnalysisWindow(QMainWindow):
         if fname:
             try:
                 self.log(f"UPLOADING: {os.path.basename(fname)}...")
-                raw, ev, ev_map, fs = load_data_eeg_mne.load_eeg_data(fname)
+                raw, ev, ev_map, fs, sess_info = load_data_eeg_mne.load_eeg_data(fname)
                 if raw is None: return
                 
                 self.raw_mne = raw
                 self.events = ev
                 self.fs = fs
-                self.raw_data_array = raw.get_data() * 1e6 # uV
+                self.session_info = sess_info
+                # Convert Volts to uV for easier reading
+                self.raw_data_array = raw.get_data() * 1e6 
                 
-                # Identify valid Motor Imagery trials (769/770)
+                # Filter Valid Motor Imagery Trials (769, 770)
                 self.valid_trials = [e for e in ev if e[2] in [769, 770]]
                 num_trials = len(self.valid_trials)
                 
+                # Update UI Labels
                 self.lbl_file_status.setText(f"ACTIVE: {os.path.basename(fname)}")
+                self.lbl_session_type.setText(f"TYPE: {sess_info['type'].upper()}")
                 self.spin_trial.setMaximum(num_trials if num_trials > 0 else 1)
                 
                 self.log(f"UPLOAD SUCCESS. FS: {fs}Hz. VALID TRIALS: {num_trials}")
@@ -358,7 +378,7 @@ class EEGAnalysisWindow(QMainWindow):
             
         try:
             # 1. Parse Parameters
-            trial_idx = self.spin_trial.value() - 1 # Convert 1-based to 0-based
+            trial_idx = self.spin_trial.value() - 1 
             if trial_idx >= len(self.valid_trials): return
             
             tmin = float(self.input_insp_tmin.text())
@@ -379,7 +399,6 @@ class EEGAnalysisWindow(QMainWindow):
             if end > self.raw_data_array.shape[1]: end = self.raw_data_array.shape[1]
             
             # 4. Slice Data (3 Channels: C3, Cz, C4)
-            # Assuming channel indices 0, 1, 2 based on our loader logic
             data_segment = self.raw_data_array[0:3, start:end]
             time_axis = np.linspace(tmin, tmax, data_segment.shape[1])
             
@@ -413,6 +432,7 @@ class EEGAnalysisWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout()
         
+        # Controls
         g = QGroupBox("CWT CONFIGURATION")
         h = QHBoxLayout()
         self.combo_wavelet = QComboBox()
@@ -421,8 +441,14 @@ class EEGAnalysisWindow(QMainWindow):
         self.input_fmin = QLineEdit("4")
         self.input_fmax = QLineEdit("40")
         
+        # Channel Selector for CWT
+        self.combo_cwt_channel = QComboBox()
+        self.combo_cwt_channel.addItems(["C3", "Cz", "C4"])
+        
         h.addWidget(QLabel("Wavelet:"))
         h.addWidget(self.combo_wavelet)
+        h.addWidget(QLabel("Channel:"))
+        h.addWidget(self.combo_cwt_channel)
         h.addWidget(QLabel("F_min [Hz]:"))
         h.addWidget(self.input_fmin)
         h.addWidget(QLabel("F_max [Hz]:"))
@@ -434,6 +460,14 @@ class EEGAnalysisWindow(QMainWindow):
         g.setLayout(h)
         layout.addWidget(g)
         
+        # Description Box
+        self.txt_cwt_desc = QTextEdit()
+        self.txt_cwt_desc.setReadOnly(True)
+        self.txt_cwt_desc.setMaximumHeight(80)
+        self.txt_cwt_desc.setText(CWT.get_cwt_interpretation("C3")) # Default text
+        layout.addWidget(self.txt_cwt_desc)
+
+        # Plot
         self.plot_cwt = PlotWidget(self)
         layout.addWidget(self.plot_cwt)
         
@@ -447,20 +481,30 @@ class EEGAnalysisWindow(QMainWindow):
 
         sel = self.combo_wavelet.currentText()
         w_type = 'mexican_hat' if "Mexican" in sel else 'morlet'
+        ch_name = self.combo_cwt_channel.currentText()
+        
+        # Map channel name to index
+        ch_map = {'C3': 0, 'Cz': 1, 'C4': 2}
+        ch_idx = ch_map[ch_name]
+        
+        # Update Description
+        self.txt_cwt_desc.setText(CWT.get_cwt_interpretation(ch_name))
         
         try:
             fmin = float(self.input_fmin.text())
             fmax = float(self.input_fmax.text())
             
-            self.log(f"RUNNING CWT ({w_type.upper()})...")
+            self.log(f"RUNNING CWT ({w_type.upper()}) on Channel {ch_name}...")
             
             if self.events is not None:
+                # Find first Right Hand trial for demonstration
                 ev_right = [e for e in self.events if e[2] == 770]
                 if ev_right:
                     idx = ev_right[0][0]
                     start = max(0, idx - int(1.0*self.fs))
                     end = min(self.raw_data_array.shape[1], idx + int(4.0*self.fs))
-                    segment = self.raw_data_array[0, start:end]
+                    
+                    segment = self.raw_data_array[ch_idx, start:end]
                     
                     tfr, freqs = CWT.run_cwt(segment, self.fs, fmin, fmax, 0.5, w_type)
                     
@@ -475,7 +519,7 @@ class EEGAnalysisWindow(QMainWindow):
                     cb.ax.yaxis.set_tick_params(color='white')
                     plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color='white')
                     
-                    self.plot_cwt.style_axes(ax, title=f"SINGLE TRIAL SPECTROGRAM (C3, RIGHT HAND)", 
+                    self.plot_cwt.style_axes(ax, title=f"SINGLE TRIAL SPECTROGRAM ({ch_name}, RIGHT HAND CUE)", 
                                              xlabel="Time [s]", ylabel="Frequency [Hz]")
                     self.plot_cwt.draw()
                     self.log("SPECTROGRAM GENERATED.")
@@ -512,6 +556,13 @@ class EEGAnalysisWindow(QMainWindow):
         h.addWidget(btn)
         g.setLayout(h)
         layout.addWidget(g)
+        
+        # Add educational text area
+        self.txt_filter_desc = QTextEdit()
+        self.txt_filter_desc.setReadOnly(True)
+        self.txt_filter_desc.setMaximumHeight(80)
+        self.txt_filter_desc.setText(filtering_BPF_EEG.get_filter_description())
+        layout.addWidget(self.txt_filter_desc)
         
         self.plot_filter = PlotWidget(self)
         layout.addWidget(self.plot_filter)
@@ -561,6 +612,13 @@ class EEGAnalysisWindow(QMainWindow):
         btn.clicked.connect(self.apply_squaring)
         layout.addWidget(btn)
         
+        # Educational Text
+        self.txt_square_desc = QTextEdit()
+        self.txt_square_desc.setReadOnly(True)
+        self.txt_square_desc.setMaximumHeight(80)
+        self.txt_square_desc.setText(squaring_EEG.get_squaring_description())
+        layout.addWidget(self.txt_square_desc)
+        
         self.plot_square = PlotWidget(self)
         layout.addWidget(self.plot_square)
         
@@ -607,6 +665,12 @@ class EEGAnalysisWindow(QMainWindow):
         h.addWidget(btn)
         g.setLayout(h)
         layout.addWidget(g)
+        
+        self.txt_avg_desc = QTextEdit()
+        self.txt_avg_desc.setReadOnly(True)
+        self.txt_avg_desc.setMaximumHeight(80)
+        self.txt_avg_desc.setText(average_all_EEG_trials.get_averaging_description())
+        layout.addWidget(self.txt_avg_desc)
         
         self.plot_avg = PlotWidget(self)
         layout.addWidget(self.plot_avg)
@@ -657,6 +721,12 @@ class EEGAnalysisWindow(QMainWindow):
         btn.clicked.connect(self.apply_smoothing)
         h.addWidget(btn)
         layout.addLayout(h)
+        
+        self.txt_smooth_desc = QTextEdit()
+        self.txt_smooth_desc.setReadOnly(True)
+        self.txt_smooth_desc.setMaximumHeight(80)
+        self.txt_smooth_desc.setText(moving_average_EEG.get_smoothing_description())
+        layout.addWidget(self.txt_smooth_desc)
         
         self.plot_smooth = PlotWidget(self)
         layout.addWidget(self.plot_smooth)
@@ -712,6 +782,12 @@ class EEGAnalysisWindow(QMainWindow):
         g.setLayout(h)
         layout.addWidget(g)
         
+        self.txt_erd_desc = QTextEdit()
+        self.txt_erd_desc.setReadOnly(True)
+        self.txt_erd_desc.setMaximumHeight(80)
+        self.txt_erd_desc.setText(percentage_ERD_ERS.get_erd_description())
+        layout.addWidget(self.txt_erd_desc)
+        
         self.plot_erd = PlotWidget(self)
         layout.addWidget(self.plot_erd)
         
@@ -752,21 +828,37 @@ class EEGAnalysisWindow(QMainWindow):
             self.log(f"ERD ERROR: {e}")
 
     # =========================================================
-    # TAB 8: CSP PATTERNS
+    # TAB 8: CSP PATTERNS & FEATURES (REVISED)
     # =========================================================
     def init_tab_csp(self):
         tab = QWidget()
         layout = QVBoxLayout()
         
-        btn_train_csp = QPushButton("[ TRAIN CSP (SPATIAL FILTERS) ]")
+        btn_train_csp = QPushButton("[ TRAIN CSP & EXTRACT FEATURES ]")
         btn_train_csp.clicked.connect(self.run_csp_training)
         layout.addWidget(btn_train_csp)
         
-        self.plot_csp = PlotWidget(self)
-        layout.addWidget(self.plot_csp)
+        self.txt_csp_desc = QTextEdit()
+        self.txt_csp_desc.setReadOnly(True)
+        self.txt_csp_desc.setMaximumHeight(80)
+        self.txt_csp_desc.setText(csp_scratch.get_csp_description())
+        layout.addWidget(self.txt_csp_desc)
+        
+        # Splitter to hold Scatter Plot and Temporal BoxPlot side-by-side
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Left Panel: Feature Scatter
+        self.plot_csp_scatter = PlotWidget(self)
+        splitter.addWidget(self.plot_csp_scatter)
+        
+        # Right Panel: Temporal BoxPlot
+        self.plot_temp_box = PlotWidget(self)
+        splitter.addWidget(self.plot_temp_box)
+        
+        layout.addWidget(splitter)
         
         tab.setLayout(layout)
-        self.tabs.addTab(tab, "8. CSP PATTERNS")
+        self.tabs.addTab(tab, "8. CSP & FEATURES")
 
     def run_csp_training(self):
         if self.filtered_data is None:
@@ -775,7 +867,6 @@ class EEGAnalysisWindow(QMainWindow):
             
         try:
             self.log("PREPARING EPOCHS FOR CSP...")
-            # Epoch window typically 0.5s to 2.5s for Motor Imagery
             epochs, labels = self.ml_pipeline.prepare_data(
                 self.filtered_data, self.events, self.fs, tmin=0.5, tmax=2.5
             )
@@ -792,68 +883,127 @@ class EEGAnalysisWindow(QMainWindow):
             self.ml_pipeline.csp = csp_scratch.CSP_Scratch(n_components=2)
             self.ml_pipeline.csp.fit(epochs, labels)
             
-            patterns = self.ml_pipeline.csp.patterns_
+            # Extract Features for Visualization
+            csp_feats = self.ml_pipeline.csp.transform(epochs)
             
-            self.plot_csp.clear_plot()
-            ax = self.plot_csp.get_axes()
+            # Extract Temporal Features for Visualization
+            temp_extractor = csp_scratch.TemporalFeatureExtractor()
+            temp_feats = temp_extractor.transform(epochs)
             
-            ch_names = ['C3', 'Cz', 'C4']
-            x = np.arange(3)
-            width = 0.35
+            # 1. Plot Scatter
+            self.plot_csp_scatter.clear_plot()
+            ax1 = self.plot_csp_scatter.get_axes()
             
-            # Visualize the pattern weights
-            ax.bar(x - width/2, patterns[0, :], width, label='CSP Comp 1 (LH)', color='cyan')
-            ax.bar(x + width/2, patterns[1, :], width, label='CSP Comp 2 (RH)', color='magenta')
+            # Scatter Plot Logic Re-implementation for GUI Canvas
+            ax1.scatter(csp_feats[labels==0, 0], csp_feats[labels==0, 1], 
+                        color='cyan', label='Left Hand', alpha=0.7, edgecolors='white')
+            ax1.scatter(csp_feats[labels==1, 0], csp_feats[labels==1, 1], 
+                        color='magenta', label='Right Hand', alpha=0.7, edgecolors='white')
             
-            ax.set_xticks(x)
-            ax.set_xticklabels(ch_names)
+            self.plot_csp_scatter.style_axes(ax1, title="CSP FEATURE SPACE (CLUSTERING)", 
+                                             xlabel="Log-Var (Comp 1)", ylabel="Log-Var (Comp 2)")
+            ax1.legend()
+            self.plot_csp_scatter.draw()
             
-            self.plot_csp.style_axes(ax, title="COMMON SPATIAL PATTERNS (WEIGHTS)", 
-                                     xlabel="Channels", ylabel="Pattern Weights")
-            ax.legend()
-            self.plot_csp.draw()
-            self.log("CSP FILTERS COMPUTED.")
+            # 2. Plot BoxPlot (Variance of C3)
+            self.plot_temp_box.clear_plot()
+            ax2 = self.plot_temp_box.get_axes()
+            
+            # Metric index 0 = Variance, Channel 0 = C3
+            col_idx = 0 
+            data_c0 = temp_feats[labels==0, col_idx]
+            data_c1 = temp_feats[labels==1, col_idx]
+            
+            box = ax2.boxplot([data_c0, data_c1], labels=['Left', 'Right'], patch_artist=True,
+                              medianprops=dict(color="white"))
+            colors = ['cyan', 'magenta']
+            for patch, color in zip(box['boxes'], colors):
+                patch.set_facecolor(color)
+            
+            self.plot_temp_box.style_axes(ax2, title="TEMPORAL FEATURE: VARIANCE (C3)", 
+                                          xlabel="Class", ylabel="Value")
+            self.plot_temp_box.draw()
+            
+            self.log("CSP & FEATURES COMPUTED.")
             
         except Exception as e:
             self.log(f"CSP ERROR: {e}")
 
     # =========================================================
-    # TAB 9: MACHINE LEARNING
+    # TAB 9: MACHINE LEARNING (REVISED LAYOUT)
     # =========================================================
     def init_tab_ml(self):
         tab = QWidget()
         layout = QVBoxLayout()
         
-        # Controls Row
-        h = QHBoxLayout()
-        
+        # --- Controls ---
+        h_ctrl = QHBoxLayout()
         btn_compare = QPushButton("[ TRAIN & COMPARE ALL 8 MODELS ]")
         btn_compare.clicked.connect(self.run_ml_comparison)
         
         self.combo_ml_plot = QComboBox()
         self.combo_ml_plot.setFixedWidth(250)
-        self.combo_ml_plot.addItem("Select Model to Plot CM...")
-        self.combo_ml_plot.currentIndexChanged.connect(self.plot_selected_confusion_matrix)
+        self.combo_ml_plot.addItem("Select Model to View...")
+        self.combo_ml_plot.currentIndexChanged.connect(self.update_ml_visuals)
         
-        h.addWidget(btn_compare)
-        h.addWidget(self.combo_ml_plot)
-        layout.addLayout(h)
+        h_ctrl.addWidget(btn_compare)
+        h_ctrl.addWidget(self.combo_ml_plot)
+        layout.addLayout(h_ctrl)
         
-        # Content Area
-        content_layout = QHBoxLayout()
+        # --- Content Area (Using TabWidget for sub-tabs logic) ---
+        self.ml_tabs = QTabWidget()
         
-        # Left: Results Text
+        # Sub-tab 1: Performance Bar Chart
+        self.tab_ml_bar = QWidget()
+        l_bar = QVBoxLayout(self.tab_ml_bar)
+        self.plot_ml_bar = PlotWidget(self)
+        l_bar.addWidget(self.plot_ml_bar)
+        self.ml_tabs.addTab(self.tab_ml_bar, "ACCURACY COMPARISON")
+        
+        # Sub-tab 2: Confusion Matrix
+        self.tab_ml_cm = QWidget()
+        l_cm = QVBoxLayout(self.tab_ml_cm)
+        self.plot_ml_cm = PlotWidget(self)
+        l_cm.addWidget(self.plot_ml_cm)
+        self.ml_tabs.addTab(self.tab_ml_cm, "CONFUSION MATRIX")
+        
+        # Sub-tab 3: Performance Curves (Learning/Loss)
+        self.tab_ml_perf = QWidget()
+        l_perf = QVBoxLayout(self.tab_ml_perf)
+        self.plot_ml_perf = PlotWidget(self)
+        l_perf.addWidget(self.plot_ml_perf)
+        self.ml_tabs.addTab(self.tab_ml_perf, "LEARNING/LOSS CURVES")
+        
+        # Sub-tab 4: Detailed Results Table
+        self.tab_ml_details = QWidget()
+        l_det = QVBoxLayout(self.tab_ml_details)
         self.txt_ml_results = QTextEdit()
         self.txt_ml_results.setReadOnly(True)
-        self.txt_ml_results.setFixedWidth(400)
-        self.txt_ml_results.setStyleSheet("border: 1px solid #00ff41; background: #000; color: #00ff41; font-family: Consolas;")
-        content_layout.addWidget(self.txt_ml_results)
+        self.txt_ml_results.setMaximumHeight(150)
         
-        # Right: Confusion Matrix Plot
-        self.plot_ml = PlotWidget(self)
-        content_layout.addWidget(self.plot_ml)
+        self.table_ml_details = QTableWidget()
+        self.table_ml_details.setColumnCount(4)
+        self.table_ml_details.setHorizontalHeaderLabels(["Trial ID", "True Label", "Predicted", "Status"])
+        self.table_ml_details.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table_ml_details.setStyleSheet("gridline-color: #00ff41; color: white;")
         
-        layout.addLayout(content_layout)
+        l_det.addWidget(self.txt_ml_results)
+        l_det.addWidget(self.table_ml_details)
+        self.ml_tabs.addTab(self.tab_ml_details, "DETAILED PREDICTIONS")
+        
+        layout.addWidget(self.ml_tabs)
+        
+        # Educational Text
+        self.txt_ml_desc = QTextEdit()
+        self.txt_ml_desc.setReadOnly(True)
+        self.txt_ml_desc.setMaximumHeight(80)
+        # Fix for potential missing description call
+        try:
+            self.txt_ml_desc.setText(ml_analysis.get_ml_description())
+        except AttributeError:
+            self.txt_ml_desc.setText("Machine Learning Description Loading...")
+            
+        layout.addWidget(self.txt_ml_desc)
         
         tab.setLayout(layout)
         self.tabs.addTab(tab, "9. CLASSIFICATION")
@@ -866,56 +1016,81 @@ class EEGAnalysisWindow(QMainWindow):
         try:
             self.log("STARTING FULL MODEL COMPARISON...")
             self.txt_ml_results.setText(">> TRAINING IN PROGRESS...\n")
-            QApplication.processEvents() # Update GUI
+            QApplication.processEvents()
             
             # Run Pipeline
-            self.ml_results = self.ml_pipeline.run_full_comparison(self.ml_epochs, self.ml_labels, test_size=0.25)
+            self.ml_metrics = self.ml_pipeline.run_full_comparison(self.ml_epochs, self.ml_labels, test_size=0.25)
             
-            # Display Results
-            report = ">> MODEL ACCURACY REPORT:\n" + "="*30 + "\n"
-            sorted_results = sorted(self.ml_results.items(), key=lambda x: x[1], reverse=True)
+            # Sort Results
+            sorted_metrics = sorted(self.ml_metrics.items(), key=lambda x: x[1]['Accuracy'], reverse=True)
             
+            # Update Dropdown
             self.combo_ml_plot.clear()
-            self.combo_ml_plot.addItem("Select Model to Plot CM...")
-            
-            for name, acc in sorted_results:
-                report += f"{name:<20}: {acc*100:.2f}%\n"
+            self.combo_ml_plot.addItem("Select Model to View...")
+            for name, _ in sorted_metrics:
                 self.combo_ml_plot.addItem(name)
                 
-            report += "="*30 + "\n"
-            report += f"BEST MODEL: {sorted_results[0][0]}"
+            # Generate Report Text
+            report = ">> MODEL METRICS REPORT:\n" + "="*50 + "\n"
+            report += f"{'MODEL':<20} | {'ACCURACY':<8} | {'PRECISION':<8} | {'RECALL':<8} | {'F1':<8}\n"
+            report += "-"*50 + "\n"
             
+            names = []
+            accs = []
+            
+            for name, m in sorted_metrics:
+                report += f"{name:<20} | {m['Accuracy']*100:.2f}     | {m['Precision']*100:.2f}     | {m['Recall']*100:.2f}     | {m['F1']:.2f}\n" # Percentage except for F1-Score
+                names.append(name)
+                accs.append(m['Accuracy'] * 100)
+                
+            report += "="*50 + "\n"
+            report += f"BEST MODEL: {sorted_metrics[0][0]}"
             self.txt_ml_results.setText(report)
-            self.log("ML COMPARISON COMPLETE.")
             
-            # Automatically plot best model
-            self.combo_ml_plot.setCurrentText(sorted_results[0][0])
+            # Plot Bar Chart (Overview)
+            self.plot_ml_bar.clear_plot()
+            ax = self.plot_ml_bar.get_axes()
+            bars = ax.bar(names, accs, color='#00ff41', alpha=0.7)
+            self.plot_ml_bar.style_axes(ax, title="MODEL ACCURACY COMPARISON", xlabel="Model", ylabel="Accuracy (%)")
+            ax.set_xticklabels(names, rotation=45, ha='right')
+            
+            # Fix Layout cut-off
+            self.plot_ml_bar.fig.subplots_adjust(bottom=0.25)
+            
+            # Add labels
+            for bar in bars:
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                        f'{height:.1f}%', ha='center', va='bottom', color='white', fontsize=9)
+            
+            self.plot_ml_bar.draw()
+            
+            self.combo_ml_plot.setCurrentText(sorted_metrics[0][0]) # Select best
+            self.log("ML COMPARISON COMPLETE.")
             
         except Exception as e:
             self.log(f"ML ERROR: {e}")
             self.txt_ml_results.setText(f"ERROR: {e}")
 
-    def plot_selected_confusion_matrix(self):
+    def update_ml_visuals(self):
         model_name = self.combo_ml_plot.currentText()
-        if "Select" in model_name or model_name not in self.ml_results:
+        if "Select" in model_name or model_name not in self.ml_metrics:
             return
             
         try:
+            # 1. Plot Confusion Matrix
             y_true, y_pred = self.ml_pipeline.get_prediction(model_name)
             if y_true is None: return
             
-            # Calculate Confusion Matrix
             from sklearn.metrics import confusion_matrix
             cm = confusion_matrix(y_true, y_pred)
             
-            self.plot_ml.clear_plot()
-            ax = self.plot_ml.get_axes()
-            
+            self.plot_ml_cm.clear_plot()
+            ax = self.plot_ml_cm.get_axes()
             im = ax.imshow(cm, interpolation='nearest', cmap='Greens')
-            
-            # Colorbar
-            cb = self.plot_ml.fig.colorbar(im, ax=ax)
+            cb = self.plot_ml_cm.fig.colorbar(im, ax=ax)
             cb.ax.yaxis.set_tick_params(color='white')
+            plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color='white')
             
             classes = ['Left', 'Right']
             ax.set_xticks(np.arange(2))
@@ -923,7 +1098,6 @@ class EEGAnalysisWindow(QMainWindow):
             ax.set_xticklabels(classes)
             ax.set_yticklabels(classes)
             
-            # Annotate
             thresh = cm.max() / 2.
             for i in range(cm.shape[0]):
                 for j in range(cm.shape[1]):
@@ -931,12 +1105,68 @@ class EEGAnalysisWindow(QMainWindow):
                             ha="center", va="center",
                             color="white" if cm[i, j] > thresh else "black")
             
-            self.plot_ml.style_axes(ax, title=f"CONFUSION MATRIX: {model_name}", 
-                                    xlabel="Predicted Label", ylabel="True Label")
-            self.plot_ml.draw()
+            self.plot_ml_cm.style_axes(ax, title=f"CONFUSION MATRIX: {model_name}", 
+                                       xlabel="Predicted Label", ylabel="True Label")
+            self.plot_ml_cm.draw()
             
+            # 2. Plot Performance Curve (Learning Curve or Loss Curve)
+            self.plot_ml_perf.clear_plot()
+            
+            # If MLP, try to show Loss Curve first
+            if "MLP" in model_name:
+                fig_loss = self.ml_pipeline.generate_loss_curve(model_name)
+                if fig_loss:
+                    # Manually transfer figure content to our canvas is hard, 
+                    # better to re-plot logic here or adapt pipeline.
+                    # For now, we reuse the pipeline generator logic directly on our axes
+                    model = self.ml_pipeline.trained_models[model_name]
+                    ax_perf = self.plot_ml_perf.get_axes()
+                    ax_perf.plot(model.loss_curve_, color='#00ff41', linewidth=2)
+                    self.plot_ml_perf.style_axes(ax_perf, title=f"LOSS CURVE: {model_name}", 
+                                                 xlabel="Epochs", ylabel="Loss")
+                    self.plot_ml_perf.draw()
+            else:
+                # For others, use Learning Curve (re-implemented plotting for GUI context)
+                from sklearn.model_selection import learning_curve
+                model = self.ml_pipeline.trained_models[model_name]
+                ax_perf = self.plot_ml_perf.get_axes()
+                
+                # Wrap Learning Curve in Try-Except for Safety (Small Data issue)
+                try:
+                    train_sizes, train_scores, test_scores = learning_curve(
+                        model, self.ml_pipeline.X_train, self.ml_pipeline.y_train, 
+                        cv=5, n_jobs=-1, train_sizes=np.linspace(0.2, 1.0, 5)
+                    )
+                    train_mean = np.mean(train_scores, axis=1) *100 # Percentage
+                    test_mean = np.mean(test_scores, axis=1)*100 # Percentage
+                    
+                    ax_perf.plot(train_sizes, train_mean, 'o-', color="cyan", label="Training")
+                    ax_perf.plot(train_sizes, test_mean, 'o-', color="magenta", label="Validation")
+                    ax_perf.legend()
+                    self.plot_ml_perf.style_axes(ax_perf, title=f"LEARNING CURVE: {model_name}", 
+                                                 xlabel="Training Samples", ylabel="Accuracy (%)")
+                    self.plot_ml_perf.draw()
+                except ValueError as ve:
+                    ax_perf.text(0.5, 0.5, "Insufficient Data for Curve", color='white', ha='center')
+                    self.plot_ml_perf.draw()
+
+            # 3. Update Detailed Table
+            details = self.ml_pipeline.get_detailed_predictions(model_name)
+            self.table_ml_details.setRowCount(len(details))
+            for i, (tid, true_l, pred_l, status) in enumerate(details):
+                self.table_ml_details.setItem(i, 0, QTableWidgetItem(str(tid)))
+                self.table_ml_details.setItem(i, 1, QTableWidgetItem(true_l))
+                self.table_ml_details.setItem(i, 2, QTableWidgetItem(pred_l))
+                
+                item_status = QTableWidgetItem(status)
+                if status == "CORRECT":
+                    item_status.setForeground(QColor("#00ff41"))
+                else:
+                    item_status.setForeground(QColor("#ff3333"))
+                self.table_ml_details.setItem(i, 3, item_status)
+                
         except Exception as e:
-            self.log(f"PLOTTING ERROR: {e}")
+            self.log(f"VISUAL UPDATE ERROR: {e}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

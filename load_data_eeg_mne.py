@@ -1,103 +1,205 @@
 """
-load_data_eeg_mne.py (REVISED)
+load_data_eeg_mne.py (REVISED v2.1)
 
 Purpose:
-    - Load GDF files.
-    - FORCE MAPPING of events to standard BCI codes (769, 770).
+    - Load GDF files from BCI Competition IV Dataset 2b.
+    - Rename channels to standard 10-20 system (C3, Cz, C4).
+    - Map hexadecimal/decimal event codes to integers based on Dataset Description.
+    - Detect Session Type (Screening vs. Smiley Feedback).
+    - Includes Standalone Test Block for debugging.
+
+Dependencies:
+    - mne
+    - numpy
+    - os
 """
 
 import mne
 import numpy as np
 import os
+import sys
 
-# Suppress heavy MNE logging
+# Suppress heavy MNE logging to keep the console clean
 mne.set_log_level('WARNING')
 
 def load_eeg_data(filepath):
+    """
+    Loads EEG data and extracts standard BCI events.
+
+    Args:
+        filepath (str): Path to the .gdf file.
+
+    Returns:
+        raw (mne.io.Raw): The raw MNE object (containing C3, Cz, C4).
+        events (np.array): The extracted events matrix.
+        event_id_map (dict): Mapping of event names to IDs.
+        fs (float): Sampling frequency.
+        session_info (dict): Metadata regarding the session type (Screening/Feedback).
+    """
     if not os.path.exists(filepath):
         print(f"[ERROR] File not found: {filepath}")
-        return None, None, None, None
+        return None, None, None, None, None
 
-    print(f"[INFO] Loading: {os.path.basename(filepath)}")
+    print(f"[INFO] Loading File: {os.path.basename(filepath)}")
 
+    # 1. Read Raw GDF
+    # preload=True is required for subsequent filtering and cropping in memory.
     try:
-        # 1. Read Raw GDF
         raw = mne.io.read_raw_gdf(filepath, preload=True, verbose='ERROR')
     except Exception as e:
         print(f"[ERROR] MNE Load Failed: {e}")
-        return None, None, None, None
+        return None, None, None, None, None
 
-    # 2. Rename Channels
-    # Dataset 2b typically has EEG:C3, EEG:Cz, EEG:C4 as first 3 channels
+    # 2. Rename Channels (Standardize BCI IV 2b naming)
+    # The dataset typically contains 3 EEG channels (Indices 0,1,2) and 3 EOG channels.
+    # We explicitly map them to ensure consistency across different subjects.
     original_names = raw.ch_names
     rename_map = {}
     
-    # Safety check: ensure we map correctly even if channel names vary slightly
-    for i, name in enumerate(original_names):
-        if i == 0: rename_map[name] = 'C3'
-        elif i == 1: rename_map[name] = 'Cz'
-        elif i == 2: rename_map[name] = 'C4'
-        elif 'EOG' in name or i > 2: rename_map[name] = f'EOG:{i}'
+    # Check if we have at least 3 channels
+    if len(original_names) >= 3:
+        rename_map[original_names[0]] = 'C3'
+        rename_map[original_names[1]] = 'Cz'
+        rename_map[original_names[2]] = 'C4'
+    
+    # Map EOG channels if they exist (Indices 3, 4, 5)
+    if len(original_names) >= 6:
+        rename_map[original_names[3]] = 'EOG:01'
+        rename_map[original_names[4]] = 'EOG:02'
+        rename_map[original_names[5]] = 'EOG:03'
 
     raw.rename_channels(rename_map)
     
-    # 3. Apply Montage
+    # 3. Set Montage (Standard 10-20 System)
+    # This provides 3D coordinates for topographic plotting (CSP/scalp maps).
     try:
         montage = mne.channels.make_standard_montage('standard_1020')
         raw.set_montage(montage, on_missing='ignore')
-    except:
-        print("[WARN] Montage setting failed (Minor issue).")
+    except Exception as e:
+        print(f"[WARN] Montage setting failed: {e}")
 
-    # 4. Pick EEG Channels Only
+    # 4. Pick EEG Channels Only for Processing
+    # We isolate the brain signals. EOG is typically used for artifact removal, 
+    # but for this specific assignment scope, we focus on the 3 motor leads.
     raw.pick(['C3', 'Cz', 'C4'])
 
-    # 5. Extract Events with FORCED MAPPING
-    # GDF events are often stored as annotations like '769', '770', '32766'
-    # We want to map these strings specifically to their integer values.
+    # 5. Extract Events with Comprehensive Mapping
+    # Based on Table 2 of the BCI Competition 2008 Description.
+    # We must map potential Hex strings or alternative descriptions to Integers.
     
-    # Define the map we WANT
-    custom_mapping = {
-        '769': 769,  # Left Hand
-        '770': 770,  # Right Hand
-        '1023': 1023 # Rejected
+    standard_bci_map = {
+        # Trigger / Cue Codes
+        '768': 768,   # Start of a trial
+        '769': 769,   # Cue onset LEFT (Class 1)
+        '770': 770,   # Cue onset RIGHT (Class 2)
+        '781': 781,   # BCI Feedback (Continuous)
+        '783': 783,   # Cue unknown
+        
+        # Artifact / State Codes
+        '276': 276,   # Idling EEG (Eyes Open)
+        '277': 277,   # Idling EEG (Eyes Closed)
+        '1023': 1023, # Rejected trial (Artifact)
+        '32766': 32766, # Start of a new run
+        
+        # Hexadecimal Variants (Sometimes MNE reads them as hex strings)
+        '0x0300': 768,
+        '0x0301': 769,
+        '0x0302': 770,
+        '0x030D': 781,
+        '0x03FF': 1023,
+        '0x7FFE': 32766
     }
     
-    # Check what annotations exist in the file
+    # Scan annotations present in the file
     annotations = raw.annotations
     unique_desc = np.unique(annotations.description)
-    print(f"[DEBUG] Found Annotation descriptions: {unique_desc}")
+    # print(f"[DEBUG] Raw Annotation Descriptions found: {unique_desc}")
     
-    # Create a valid map based on what exists in the file
+    # Build a specific mapping for this file based on what is available
     used_map = {}
     for desc in unique_desc:
-        # Sometimes description is 'Event 769' or just '769'
-        # Convert to string and strip potential whitespace
         desc_str = str(desc).strip()
         
-        if desc_str in custom_mapping:
-            used_map[desc_str] = custom_mapping[desc_str]
+        # 1. Check strict string match
+        if desc_str in standard_bci_map:
+            used_map[desc_str] = standard_bci_map[desc_str]
         else:
-            # Handle hex codes if present (e.g., '0x0301')
+            # 2. Try integer conversion fallback
             try:
-                # Attempt to map standard decimal strings
                 val = int(desc_str)
-                if val in [769, 770, 1023]:
+                if val in standard_bci_map.values():
                     used_map[desc_str] = val
-            except:
-                pass
+            except ValueError:
+                continue
 
     if not used_map:
-        print("[CRITICAL WARN] No standard BCI events (769/770) found in annotations!")
-        # Fallback: Let MNE decide, but print warning
+        print("[CRITICAL WARNING] No standard BCI events found. Defaulting to MNE auto-mapping.")
         events, event_id_map = mne.events_from_annotations(raw, verbose=False)
-        print(f"[DEBUG] Fallback MNE Map: {event_id_map}")
     else:
-        # Use our enforced map
-        print(f"[INFO] Enforcing Event Map: {used_map}")
+        print(f"[INFO] Applied Event Map: {used_map}")
         events, event_id_map = mne.events_from_annotations(raw, event_id=used_map, verbose=False)
 
-    sfreq = raw.info['sfreq']
-    print(f"[INFO] Sampling Rate: {sfreq} Hz")
-    print(f"[INFO] Total Extracted Events: {len(events)}")
+    # 6. Determine Session Type (Screening vs Feedback)
+    # Logic: Feedback sessions (03T, 04E, 05E) contain event 781 (BCI Feedback).
+    # Screening sessions (01T, 02T) do not.
     
-    return raw, events, event_id_map, sfreq
+    has_feedback = 781 in event_id_map.values()
+    
+    session_type = "Smiley Feedback" if has_feedback else "Screening (No Feedback)"
+    
+    session_info = {
+        "filename": os.path.basename(filepath),
+        "type": session_type,
+        "has_feedback": has_feedback,
+        "total_trials": len(events),
+        "sampling_rate": raw.info['sfreq']
+    }
+
+    print(f"[INFO] Detected Session Type: {session_type}")
+    print(f"[INFO] Sampling Rate: {raw.info['sfreq']} Hz")
+    
+    return raw, events, event_id_map, raw.info['sfreq'], session_info
+
+# ==========================================
+# Standalone Test Execution
+# ==========================================
+if __name__ == "__main__":
+    print(">> STANDALONE TEST MODE: load_data_eeg_mne.py")
+    print(">> This mode allows you to test GDF loading without the GUI.\n")
+
+    # 1. Input File
+    target_file = input("Please enter the filename/path of a .gdf file (e.g., B0401T.gdf): ").strip()
+
+    # Remove quotes if user copied path as string
+    target_file = target_file.replace('"', '').replace("'", "")
+
+    if not target_file:
+        print("[TEST] No file provided. Exiting.")
+        sys.exit()
+
+    # 2. Run the Function
+    print(f"\n[TEST] Attempting to load: {target_file} ...")
+    raw, events, event_map, fs, session_meta = load_eeg_data(target_file)
+
+    # 3. Report Results
+    if raw is not None:
+        print("\n" + "="*40)
+        print("       DATA LOAD SUCCESSFUL")
+        print("="*40)
+        print(f"1. Filename      : {session_meta['filename']}")
+        print(f"2. Session Type  : {session_meta['type']}")
+        print(f"3. Sampling Rate : {fs} Hz")
+        print(f"4. Total Events  : {session_meta['total_trials']}")
+        print(f"5. Channels      : {raw.ch_names}")
+        print(f"6. Duration      : {raw.times[-1]:.2f} seconds")
+        print("-" * 40)
+        print("Event Mapping Found:")
+        for desc, code in event_map.items():
+            print(f"  - '{desc}' -> ID {code}")
+        print("="*40 + "\n")
+        
+        # Optional: Print first 5 events
+        print("[TEST] First 5 Events (Sample Index, 0, Event ID):")
+        print(events[:5])
+    else:
+        print("\n[TEST] Loading Failed. Please check the error messages above.")
