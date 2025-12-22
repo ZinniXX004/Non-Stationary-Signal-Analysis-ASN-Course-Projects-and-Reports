@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import skew, kurtosis
 
 # =========================================================
-# 1. Context & Description Helper (MISSING FUNCTION FIXED)
+# 1. Context & Description Helper
 # =========================================================
 def get_csp_description():
     """
@@ -150,19 +150,14 @@ class CSP_Scratch:
             cov_sum += cov
         return cov_sum / n_trials
 
-    # --- NEW: VISUALIZATION METHOD ---
     def plot_feature_scatter(self, features, labels, class_names=['Left', 'Right']):
         """
         Generates a 2D Scatter Plot of the extracted CSP features.
-        This visualizes how well the classes are separated.
         """
         if features.shape[1] < 2:
-            print("[WARN] Need at least 2 CSP components for scatter plot.")
             return None
 
         fig, ax = plt.subplots(figsize=(6, 5))
-        
-        # Styling for Dark Theme
         fig.patch.set_facecolor('#0d0d0d')
         ax.set_facecolor('#0d0d0d')
         
@@ -174,14 +169,12 @@ class CSP_Scratch:
         ax.scatter(features[labels==1, 0], features[labels==1, 1], 
                    color='magenta', label=class_names[1], alpha=0.7, edgecolors='white', s=60)
         
-        ax.set_title("CSP FEATURE SPACE (CLUSTERING)", color='white', fontweight='bold')
+        ax.set_title("CSP FEATURE SPACE (SPATIAL)", color='white', fontweight='bold')
         ax.set_xlabel("Log-Variance (Component 1)", color='white')
         ax.set_ylabel("Log-Variance (Component 2)", color='white')
         
         ax.tick_params(colors='white')
-        for spine in ax.spines.values():
-            spine.set_color('white')
-            
+        for spine in ax.spines.values(): spine.set_color('white')
         ax.legend(facecolor='#1a1a1a', edgecolor='white', labelcolor='white')
         ax.grid(True, color='#333', linestyle='--')
         
@@ -189,15 +182,15 @@ class CSP_Scratch:
         return fig
 
 # =========================================================
-# 3. Temporal Feature Extraction (Statistical Features)
+# 2. Temporal Feature Extraction (Statistical Features)
 # =========================================================
 class TemporalFeatureExtractor:
     """
     Extracts statistical time-domain features from raw EEG signals.
-    Metrics: Mean, Variance, Skewness, Kurtosis.
+    Metrics: Mean, Variance, StdDev, Skewness, Kurtosis.
     """
     def __init__(self):
-        self.feature_names = ['Variance', 'Skewness', 'Kurtosis']
+        self.feature_names = ['Mean', 'Variance', 'StdDev', 'Skewness', 'Kurtosis']
 
     def transform(self, X):
         """
@@ -205,74 +198,87 @@ class TemporalFeatureExtractor:
         Args:
             X: (n_trials, n_channels, n_samples)
         Returns:
-            features: (n_trials, n_channels * 3) -> Flattened feature vector
+            features: (n_trials, n_channels * 5) -> Flattened feature vector
         """
         n_trials, n_channels, n_samples = X.shape
         
         # Initialize output matrix
-        # We extract 3 metrics per channel
-        features = np.zeros((n_trials, n_channels * len(self.feature_names)))
+        # We extract 5 metrics per channel
+        n_metrics = len(self.feature_names)
+        features = np.zeros((n_trials, n_channels * n_metrics))
         
         for i in range(n_trials):
             trial_feats = []
             for c in range(n_channels):
                 signal = X[i, c, :]
                 
-                # 1. Variance (Energy)
-                # We skip Mean because EEG is usually bandpass filtered to 0 mean.
+                # 1. Mean
+                mean_val = np.mean(signal)
+                
+                # 2. Variance
                 var_val = np.var(signal)
                 
-                # 2. Skewness (Asymmetry of distribution)
+                # 3. Standard Deviation
+                std_val = np.std(signal)
+                
+                # 4. Skewness
                 skew_val = skew(signal)
                 
-                # 3. Kurtosis (Tail heaviness / Peakiness)
+                # 5. Kurtosis
                 kurt_val = kurtosis(signal)
                 
-                trial_feats.extend([var_val, skew_val, kurt_val])
+                trial_feats.extend([mean_val, var_val, std_val, skew_val, kurt_val])
                 
             features[i, :] = np.array(trial_feats)
             
         return features
 
-    # --- NEW: VISUALIZATION METHOD ---
-    def plot_feature_boxplot(self, features, labels, channel_idx=0, metric_idx=0, 
-                             class_names=['Left', 'Right'], ch_name="C3", metric_name="Variance"):
+    def plot_feature_boxplot_all_metrics(self, features, labels, channel_idx=0, 
+                                         class_names=['Left', 'Right'], ch_name="C3"):
         """
-        Generates a Box Plot to visualize statistical differences between classes.
-        Useful to see if a simple temporal feature can discriminate classes.
+        Generates 5 Box Plots (one for each metric) for a specific channel.
+        Visualizes which statistical property best separates the classes.
         """
-        # Calculate column index in the flattened feature matrix
-        # Structure: [Ch1_Var, Ch1_Skew, Ch1_Kurt, Ch2_Var...]
-        col_idx = (channel_idx * 3) + metric_idx
+        n_metrics = len(self.feature_names)
         
-        data_c0 = features[labels==0, col_idx]
-        data_c1 = features[labels==1, col_idx]
-        
-        fig, ax = plt.subplots(figsize=(6, 5))
-        
-        # Dark Theme Styling
+        # Create subplots (1 row, 5 columns)
+        fig, axes = plt.subplots(1, n_metrics, figsize=(15, 4))
         fig.patch.set_facecolor('#0d0d0d')
-        ax.set_facecolor('#0d0d0d')
         
-        # Create Boxplot
-        box = ax.boxplot([data_c0, data_c1], labels=class_names, patch_artist=True,
-                         medianprops=dict(color="white"))
-        
-        # Color the boxes
         colors = ['cyan', 'magenta']
-        for patch, color in zip(box['boxes'], colors):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.6)
-            
-        ax.set_title(f"TEMPORAL FEATURE: {metric_name} ({ch_name})", color='white', fontweight='bold')
-        ax.set_ylabel(f"{metric_name} Value", color='white')
         
-        ax.tick_params(colors='white')
-        for spine in ax.spines.values():
-            spine.set_color('white')
+        for m_idx, ax in enumerate(axes):
+            ax.set_facecolor('#0d0d0d')
+            metric_name = self.feature_names[m_idx]
             
-        ax.grid(True, color='#333', axis='y', linestyle='--')
-        
+            # Calculate column index in flattened feature matrix
+            # Structure: [Ch1_Metrics..., Ch2_Metrics..., Ch3_Metrics...]
+            col_idx = (channel_idx * n_metrics) + m_idx
+            
+            data_c0 = features[labels==0, col_idx]
+            data_c1 = features[labels==1, col_idx]
+            
+            # FIX: Used 'tick_labels' instead of 'labels' to support Matplotlib 3.9+
+            '''box = ax.boxplot([data_c0, data_c1], tick_labels=class_names, patch_artist=True,
+                             medianprops=dict(color="white"))'''
+            box = ax.boxplot([data_c0, data_c1], 
+                 tick_labels=class_names, 
+                 patch_artist=True, 
+                 medianprops=dict(color="white"),
+                 whiskerprops=dict(color="white"),  # Makes vertical lines white
+                 capprops=dict(color="white"))      # Makes end caps white
+            
+            for patch, color in zip(box['boxes'], colors):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.6)
+                
+            ax.set_title(metric_name, color='white', fontsize=10, fontweight='bold')
+            
+            ax.tick_params(colors='white')
+            for spine in ax.spines.values(): spine.set_color('white')
+            ax.grid(True, color='#333', axis='y', linestyle='--')
+            
+        fig.suptitle(f"TEMPORAL FEATURES DISTRIBUTION ({ch_name})", color='white', y=1.05)
         fig.tight_layout()
         return fig
 
@@ -282,7 +288,12 @@ class TemporalFeatureExtractor:
 if __name__ == "__main__":
     print(">> RUNNING STANDALONE TEST: csp_scratch.py")
     
-    # 1. Generate Synthetic Data
+    # 1. Print Description
+    print("-" * 60)
+    print(get_csp_description())
+    print("-" * 60)
+    
+    # 2. Generate Synthetic Data (3 Channels, 100 trials)
     n_trials = 100
     n_ch = 3
     n_samp = 500
@@ -290,34 +301,32 @@ if __name__ == "__main__":
     y = np.array([0]*50 + [1]*50)
     
     # Inject differences
-    # Class 0: High Variance Ch0
+    # Class 0: High Variance Ch0 (Left Hemi)
     X[0:50, 0, :] *= 3.0
-    # Class 1: High Variance Ch2
+    # Class 1: High Variance Ch2 (Right Hemi)
     X[50:, 2, :] *= 3.0
     
-    # 2. Test CSP
+    # 3. Test CSP
     print("\n[TEST] CSP Training & Visualization...")
     csp = CSP_Scratch(n_components=2)
     csp.fit(X, y)
     csp_feats = csp.transform(X)
-    print(f"CSP Features: {csp_feats.shape}")
+    print(f"CSP Features Shape: {csp_feats.shape}")
     
-    # Generate Scatter Plot
     fig1 = csp.plot_feature_scatter(csp_feats, y)
     if fig1:
         fig1.suptitle("TEST CSP PLOT", color='white', y=0.98)
     
-    # 3. Test Temporal Extraction
+    # 4. Test Temporal Extraction
     print("\n[TEST] Temporal Extraction & Visualization...")
     temp_extractor = TemporalFeatureExtractor()
     temp_feats = temp_extractor.transform(X)
-    print(f"Temporal Features: {temp_feats.shape}")
+    print(f"Temporal Features Shape: {temp_feats.shape}")
+    print(f"(Expected: {n_trials} x {n_ch * 5} = {n_trials} x 15)")
     
-    # Generate Box Plot (Variance of Ch0)
-    fig2 = temp_extractor.plot_feature_boxplot(temp_feats, y, channel_idx=0, metric_idx=0, 
-                                               ch_name="C3", metric_name="Variance")
-    if fig2:
-        fig2.suptitle("TEST TEMPORAL PLOT", color='white', y=0.98)
+    # Generate Multi-Metric Box Plot for Channel 0 (C3)
+    fig2 = temp_extractor.plot_feature_boxplot_all_metrics(temp_feats, y, channel_idx=0, 
+                                                           ch_name="C3 (Simulated)")
     
     plt.show()
     print(">> TEST COMPLETE.")

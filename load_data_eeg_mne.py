@@ -1,17 +1,19 @@
 """
-load_data_eeg_mne.py (REVISED v2.1)
+load_data_eeg_mne.py (REVISED v3.0)
 
 Purpose:
     - Load GDF files from BCI Competition IV Dataset 2b.
-    - Rename channels to standard 10-20 system (C3, Cz, C4).
-    - Map hexadecimal/decimal event codes to integers based on Dataset Description.
+    - Load ALL channels initially (including EOG) for inspection.
+    - Identify and separate the 3 target Motor Imagery channels (C3, Cz, C4).
+    - Map hexadecimal/decimal event codes to standard integers.
     - Detect Session Type (Screening vs. Smiley Feedback).
-    - Includes Standalone Test Block for debugging.
+    - Provide comprehensive metadata for GUI display.
 
 Dependencies:
     - mne
     - numpy
     - os
+    - sys
 """
 
 import mne
@@ -24,17 +26,21 @@ mne.set_log_level('WARNING')
 
 def load_eeg_data(filepath):
     """
-    Loads EEG data and extracts standard BCI events.
+    Loads EEG data, extracts events, and prepares metadata.
+    
+    This function loads the ENTIRE dataset (including EOG) to allow for 
+    full inspection. It also identifies the indices of the critical 
+    motor imagery channels (C3, Cz, C4) for later use.
 
     Args:
         filepath (str): Path to the .gdf file.
 
     Returns:
-        raw (mne.io.Raw): The raw MNE object (containing C3, Cz, C4).
-        events (np.array): The extracted events matrix.
+        raw (mne.io.Raw): The complete MNE raw object (All channels).
+        events (np.array): The extracted events matrix [sample, 0, id].
         event_id_map (dict): Mapping of event names to IDs.
         fs (float): Sampling frequency.
-        session_info (dict): Metadata regarding the session type (Screening/Feedback).
+        session_info (dict): Comprehensive metadata regarding the session.
     """
     if not os.path.exists(filepath):
         print(f"[ERROR] File not found: {filepath}")
@@ -42,7 +48,7 @@ def load_eeg_data(filepath):
 
     print(f"[INFO] Loading File: {os.path.basename(filepath)}")
 
-    # 1. Read Raw GDF
+    # 1. Read Raw GDF (Load EVERYTHING)
     # preload=True is required for subsequent filtering and cropping in memory.
     try:
         raw = mne.io.read_raw_gdf(filepath, preload=True, verbose='ERROR')
@@ -56,13 +62,14 @@ def load_eeg_data(filepath):
     original_names = raw.ch_names
     rename_map = {}
     
-    # Check if we have at least 3 channels
+    # Check if we have at least 3 channels (Safety check)
     if len(original_names) >= 3:
         rename_map[original_names[0]] = 'C3'
         rename_map[original_names[1]] = 'Cz'
         rename_map[original_names[2]] = 'C4'
     
     # Map EOG channels if they exist (Indices 3, 4, 5)
+    # We map them to 'EOG:01' etc. to make them distinct from EEG.
     if len(original_names) >= 6:
         rename_map[original_names[3]] = 'EOG:01'
         rename_map[original_names[4]] = 'EOG:02'
@@ -72,18 +79,14 @@ def load_eeg_data(filepath):
     
     # 3. Set Montage (Standard 10-20 System)
     # This provides 3D coordinates for topographic plotting (CSP/scalp maps).
+    # We apply this primarily to the EEG channels.
     try:
         montage = mne.channels.make_standard_montage('standard_1020')
         raw.set_montage(montage, on_missing='ignore')
     except Exception as e:
-        print(f"[WARN] Montage setting failed: {e}")
+        print(f"[WARN] Montage setting failed (Non-critical): {e}")
 
-    # 4. Pick EEG Channels Only for Processing
-    # We isolate the brain signals. EOG is typically used for artifact removal, 
-    # but for this specific assignment scope, we focus on the 3 motor leads.
-    raw.pick(['C3', 'Cz', 'C4'])
-
-    # 5. Extract Events with Comprehensive Mapping
+    # 4. Extract Events with Comprehensive Mapping
     # Based on Table 2 of the BCI Competition 2008 Description.
     # We must map potential Hex strings or alternative descriptions to Integers.
     
@@ -139,7 +142,7 @@ def load_eeg_data(filepath):
         print(f"[INFO] Applied Event Map: {used_map}")
         events, event_id_map = mne.events_from_annotations(raw, event_id=used_map, verbose=False)
 
-    # 6. Determine Session Type (Screening vs Feedback)
+    # 5. Determine Session Type (Screening vs Feedback)
     # Logic: Feedback sessions (03T, 04E, 05E) contain event 781 (BCI Feedback).
     # Screening sessions (01T, 02T) do not.
     
@@ -147,16 +150,36 @@ def load_eeg_data(filepath):
     
     session_type = "Smiley Feedback" if has_feedback else "Screening (No Feedback)"
     
+    # 6. Build Metadata Dictionary
+    # This info is crucial for the GUI "Data Inspection" tab.
+    
+    # Calculate duration in minutes
+    duration_sec = raw.times[-1]
+    duration_min = duration_sec / 60.0
+    
+    # Count specific trials
+    count_left = np.sum(events[:, 2] == 769)
+    count_right = np.sum(events[:, 2] == 770)
+    count_artifact = np.sum(events[:, 2] == 1023)
+    
     session_info = {
         "filename": os.path.basename(filepath),
         "type": session_type,
         "has_feedback": has_feedback,
-        "total_trials": len(events),
-        "sampling_rate": raw.info['sfreq']
+        "total_events": len(events),
+        "count_left": int(count_left),
+        "count_right": int(count_right),
+        "count_artifact": int(count_artifact),
+        "sampling_rate": raw.info['sfreq'],
+        "duration_sec": duration_sec,
+        "duration_str": f"{int(duration_min)} min {int(duration_sec % 60)} sec",
+        "all_channels": raw.ch_names,
+        "motor_channels": ['C3', 'Cz', 'C4'] # Explicit list of target channels
     }
 
     print(f"[INFO] Detected Session Type: {session_type}")
     print(f"[INFO] Sampling Rate: {raw.info['sfreq']} Hz")
+    print(f"[INFO] Total Channels Loaded: {len(raw.ch_names)}")
     
     return raw, events, event_id_map, raw.info['sfreq'], session_info
 
@@ -183,20 +206,22 @@ if __name__ == "__main__":
 
     # 3. Report Results
     if raw is not None:
-        print("\n" + "="*40)
+        print("\n" + "="*50)
         print("       DATA LOAD SUCCESSFUL")
-        print("="*40)
+        print("="*50)
         print(f"1. Filename      : {session_meta['filename']}")
         print(f"2. Session Type  : {session_meta['type']}")
-        print(f"3. Sampling Rate : {fs} Hz")
-        print(f"4. Total Events  : {session_meta['total_trials']}")
-        print(f"5. Channels      : {raw.ch_names}")
-        print(f"6. Duration      : {raw.times[-1]:.2f} seconds")
-        print("-" * 40)
-        print("Event Mapping Found:")
-        for desc, code in event_map.items():
-            print(f"  - '{desc}' -> ID {code}")
-        print("="*40 + "\n")
+        print(f"3. Duration      : {session_meta['duration_str']}")
+        print(f"4. Sampling Rate : {fs} Hz")
+        print(f"5. Channels All  : {session_meta['all_channels']}")
+        print(f"6. Target Chans  : {session_meta['motor_channels']}")
+        print("-" * 50)
+        print(f"TRIALS SUMMARY:")
+        print(f"  - Left Hand (769)  : {session_meta['count_left']}")
+        print(f"  - Right Hand (770) : {session_meta['count_right']}")
+        print(f"  - Artifacts (1023) : {session_meta['count_artifact']}")
+        print(f"  - Total Events     : {session_meta['total_events']}")
+        print("="*50 + "\n")
         
         # Optional: Print first 5 events
         print("[TEST] First 5 Events (Sample Index, 0, Event ID):")

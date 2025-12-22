@@ -2,7 +2,7 @@
 main.py
 
 Purpose:
-    - Entry point for the EEG Analysis System (Version 5.0).
+    - Entry point for the EEG Analysis System (Version 8.0).
     - Orchestrates system startup, logging, and dependency checks.
     - Launches the Main Graphical User Interface (GUI).
     - Ensures all critical components (DLLs, Libraries) are present before launch.
@@ -16,16 +16,20 @@ Dependencies:
 
 import sys
 import os
-import logger_util # Custom module to redirect output to .txt
+import logger_util # Custom module to redirect output to debug_output.txt
 
 def system_preflight_check():
     """
     Performs critical checks before loading the heavy GUI modules.
+    This prevents the app from crashing with cryptic errors if files are missing.
     
     Returns:
-        bool: True if checks pass, False otherwise.
+        bool: True if all checks pass, False otherwise.
     """
-    # 1. Check for the C++ Compiled Dynamic Link Library
+    print(">> Performing System Pre-flight Checks...")
+    
+    # 1. Check for the C++ Compiled Dynamic Link Library (eeg_processing.dll)
+    # This is required for high-performance signal processing (CWT, Filter).
     dll_name = "eeg_processing.dll"
     if not os.path.exists(dll_name):
         print(f"[CRITICAL ERROR] Core Library '{dll_name}' is missing!")
@@ -33,6 +37,7 @@ def system_preflight_check():
         print(">> COMMAND: g++ -O3 -shared -static -o eeg_processing.dll eeg_core.cpp")
         return False
     
+    print(f"[CHECK] Core Library '{dll_name}' found.")
     return True
 
 def main():
@@ -59,24 +64,30 @@ def main():
     try:
         from PyQt6.QtWidgets import QApplication
         from PyQt6.QtGui import QPalette, QColor
+        
+        # Import the Main GUI Module
         import GUI
+        print("[CHECK] GUI Module imported successfully.")
+        
     except ImportError as e:
         print("\n[CRITICAL ERROR] Failed to import necessary modules.")
         print(f">> ERROR DETAILS: {e}")
-        print(">> SUGGESTION: Ensure 'numpy', 'scipy', 'matplotlib', 'scikit-learn', and 'PyQt6' are installed.")
+        print(">> SUGGESTION: Ensure 'numpy', 'scipy', 'matplotlib', 'scikit-learn', 'mne', and 'PyQt6' are installed.")
         input("Press Enter to exit...")
         sys.exit(1)
+        
     except Exception as e:
         print(f"\n[CRITICAL ERROR] An unexpected error occurred during startup: {e}")
         input("Press Enter to exit...")
         sys.exit(1)
 
     # 4. Initialize Qt Application
+    print(">> Initializing PyQt6 Application...")
     app = QApplication(sys.argv)
 
     # 5. Apply Global Dark Palette (Base Theme)
-    # While GUI.py handles specific styling, this ensures standard dialogs 
-    # (like File Pickers) match the dark aesthetic.
+    # While GUI.py handles specific widget styling via CSS, this ensures standard dialogs 
+    # (like File Pickers and Message Boxes) match the dark aesthetic.
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor(13, 13, 13))
     palette.setColor(QPalette.ColorRole.WindowText, QColor(0, 255, 65))
@@ -95,10 +106,11 @@ def main():
     app.setPalette(palette)
 
     # 6. Launch Main Window
+    print(">> Launching Main Window...")
     window = GUI.EEGAnalysisWindow()
     window.show()
     
-    print(">> GUI LAUNCH SUCCESSFUL.")
+    print(">> GUI LAUNCH SUCCESSFUL. SYSTEM READY.")
     
     # 7. Start Event Loop
     sys.exit(app.exec())

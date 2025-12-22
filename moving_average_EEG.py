@@ -1,11 +1,11 @@
 """
-moving_average_EEG.py
+moving_average_EEG.py (REVISED v3.0)
 
 Purpose:
     - Apply a Moving Average (Sliding Window) filter to smooth the Power signal.
-    - Offload the loop iteration to 'eeg_processing.dll' (C++).
-    - Window size is defined in seconds (converted to samples based on fs).
-    - Provide educational context regarding Signal Smoothing/Envelope Extraction.
+    - Extract the 'Envelope' of the ERD/ERS response.
+    - Support Multi-Channel Processing (C3, Cz, C4).
+    - Offload computationally intensive loop to C++ backend.
 
 Dependencies:
     - ctypes
@@ -60,17 +60,15 @@ def get_smoothing_description():
     description = (
         "--- POST-PROCESSING: MOVING AVERAGE (SMOOTHING) ---\n\n"
         "1. OBJECTIVE:\n"
-        "   To extract the 'envelope' or the general trend of the power signal.\n\n"
+        "   To extract the smooth 'envelope' of the power signal for C3, Cz, and C4.\n\n"
         "2. WHY IS THIS NECESSARY?\n"
         "   - The Squared Signal (Instantaneous Power) is extremely jagged and noisy.\n"
-        "   - We are interested in the *time course* of energy changes over seconds,\n"
-        "     not the rapid millisecond-by-millisecond fluctuations.\n\n"
+        "   - To visualize the slow cortical potential changes (ERD/ERS), we must\n"
+        "     average out the rapid fluctuations.\n\n"
         "3. METHOD (Sliding Window):\n"
         "   - We calculate the arithmetic mean of data points within a sliding window.\n"
-        "   - Window Size matters: \n"
-        "     * Too small: Signal remains noisy.\n"
-        "     * Too large: Temporal resolution is lost (blurs the start/end of ERD).\n"
-        "   - Standard Window: 0.5 to 1.0 seconds for Motor Imagery analysis.\n"
+        "   - Standard Window: 0.5 to 1.0 seconds.\n"
+        "   - This acts as a Low-Pass Filter in the time domain.\n"
     )
     return description
 
@@ -82,10 +80,9 @@ def apply_moving_average(power_data, fs, window_sec=0.5):
     Smooths the power data using the C++ backend.
     
     Args:
-        power_data (np.array): Input array (Channels x Samples) or (Samples,).
+        power_data (np.array): Input array (Channels x Samples).
         fs (float): Sampling frequency.
         window_sec (float): Length of the smoothing window in seconds.
-                            Standard for ERD is often 0.25s to 1.0s.
     
     Returns:
         smoothed_data (np.array): Smoothed signal with same shape as input.
@@ -106,7 +103,6 @@ def apply_moving_average(power_data, fs, window_sec=0.5):
     smoothed_data = np.zeros_like(power_data, dtype=np.float64)
     
     # Process each channel individually
-    # The C++ function is designed for 1D arrays (double*)
     for i in range(n_channels):
         # 1. Prepare C-compatible arrays (Contiguous memory)
         channel_in = np.ascontiguousarray(power_data[i], dtype=np.float64)
@@ -128,45 +124,58 @@ def apply_moving_average(power_data, fs, window_sec=0.5):
 # Unit Test (Standalone Execution)
 # =========================================================
 if __name__ == "__main__":
-    print(">> RUNNING STANDALONE TEST: moving_average_EEG.py")
+    print(">> RUNNING STANDALONE TEST: moving_average_EEG.py (Multi-Channel)")
     
     # 1. Print Description
     print("-" * 60)
     print(get_smoothing_description())
     print("-" * 60)
 
-    # 2. Create a noisy Step Function
+    # 2. Create Noisy Data for 3 Channels
     fs = 250.0
     duration = 4.0
     t = np.linspace(0, duration, int(duration * fs))
     
-    # Signal: 0 until t=2, then jumps to 10 (Simulating ERS rebound)
-    clean_signal = np.zeros_like(t)
-    clean_signal[t >= 2.0] = 10.0
+    # C3: Step Function (Simulating ERS Rebound)
+    clean_c3 = np.zeros_like(t)
+    clean_c3[t >= 2.0] = 10.0
     
-    # Add heavy random noise
-    noise = np.random.randn(len(t)) * 3.0
-    noisy_signal = clean_signal + noise
+    # Cz: Sine Wave Envelope
+    clean_cz = np.sin(2 * np.pi * 0.5 * t) * 5.0 + 5.0
     
-    print(f"\n[TEST] Applying Moving Average (Window = 1.0s, fs={fs}Hz)...")
+    # C4: Impulse (Simulating Artifact)
+    clean_c4 = np.zeros_like(t)
+    clean_c4[(t > 1.9) & (t < 2.1)] = 20.0
+    
+    # Stack and Add Noise
+    clean_3ch = np.vstack([clean_c3, clean_cz, clean_c4])
+    noise = np.random.randn(3, len(t)) * 2.0
+    noisy_3ch = clean_3ch + noise
+    
+    print(f"\n[TEST] Applying Moving Average to 3 Channels (Window = 0.5s)...")
     
     try:
-        smoothed_signal = apply_moving_average(noisy_signal, fs, window_sec=1.0)
+        smoothed_3ch = apply_moving_average(noisy_3ch, fs, window_sec=0.5)
         
         # 3. Plot Comparison
-        plt.figure(figsize=(10, 5))
-        plt.plot(t, noisy_signal, color='lightgray', label='Noisy Input (Squared Signal)')
-        plt.plot(t, clean_signal, 'k--', label='True Underlying Trend')
-        plt.plot(t, smoothed_signal, 'r', linewidth=2, label='Smoothed Output (Envelope)')
+        fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
+        ch_names = ['C3 (Step)', 'Cz (Sine)', 'C4 (Impulse)']
         
-        plt.title("Test: Moving Average Smoothing")
-        plt.xlabel("Time (s)")
-        plt.ylabel("Amplitude")
-        plt.legend()
-        plt.grid(True)
+        for i, ax in enumerate(axes):
+            ax.plot(t, noisy_3ch[i, :], color='lightgray', label='Noisy Input')
+            ax.plot(t, clean_3ch[i, :], 'k--', label='True Envelope')
+            ax.plot(t, smoothed_3ch[i, :], 'r', linewidth=2, label='Smoothed Output')
+            
+            ax.set_title(f"Smoothing Result: {ch_names[i]}")
+            ax.set_ylabel("Power")
+            ax.legend(loc='upper right')
+            ax.grid(True)
+            
+        axes[-1].set_xlabel("Time (s)")
+        plt.tight_layout()
         plt.show()
         
-        print("\n[TEST] Smoothing Module Verification Passed.")
+        print("\n[TEST] Multi-Channel Smoothing Verification Passed.")
         
     except Exception as e:
         print(f"\n[TEST] Failed: {e}")

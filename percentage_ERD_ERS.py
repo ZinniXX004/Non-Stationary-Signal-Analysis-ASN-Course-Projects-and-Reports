@@ -1,10 +1,11 @@
 """
-percentage_ERD_ERS.py
+percentage_ERD_ERS.py (REVISED v3.0)
 
 Purpose:
     - Calculate the relative change in power compared to a baseline reference.
     - Formula: ERD% = ((A - R) / R) * 100
     - Differentiate between Desynchronization (Activation) and Synchronization (Idling).
+    - Support Multi-Channel (C3, Cz, C4) processing for Motor Imagery analysis.
     - Provide educational context regarding the quantification of brain state changes.
 
 Dependencies:
@@ -94,6 +95,7 @@ def calculate_erd_percent(smoothed_data, fs, tmin, tmax, ref_interval=(-1.0, 0.0
     # 3. Calculate Reference Power (R)
     # R is the mean power across the baseline period for EACH channel.
     # keepdims=True preserves shape as (n_channels, 1) for correct broadcasting.
+    # This means R will be [R_c3, R_cz, R_c4] column vector.
     R = np.mean(smoothed_data[:, idx_start:idx_end], axis=1, keepdims=True)
     
     # Prevent Division by Zero
@@ -110,37 +112,45 @@ def calculate_erd_percent(smoothed_data, fs, tmin, tmax, ref_interval=(-1.0, 0.0
 # Unit Test (Standalone Execution)
 # =========================================================
 if __name__ == "__main__":
-    print(">> RUNNING STANDALONE TEST: percentage_ERD_ERS.py")
+    print(">> RUNNING STANDALONE TEST: percentage_ERD_ERS.py (Multi-Channel)")
     
     # 1. Print Description
     print("-" * 60)
     print(get_erd_description())
     print("-" * 60)
 
-    # 2. Simulate a single channel signal
+    # 2. Simulate 3 Channels
     fs = 250.0
     tmin, tmax = -2.0, 6.0
     duration = tmax - tmin
     n_pts = int(duration * fs)
     time_vec = np.linspace(tmin, tmax, n_pts)
     
-    # Create Dummy Data:
-    # Baseline (-2s to 0s): Power = 10 units (Stable)
-    # ERD (0s to 3s): Power drops to 5 units (Should be -50%)
-    # ERS (3s to 6s): Power rises to 15 units (Should be +50%)
+    # Baseline power level
+    baseline_power = 10.0
     
-    dummy_power = np.ones((1, n_pts)) * 10.0 # Start with Baseline level
+    # Initialize array (3 Channels x N Samples)
+    dummy_power = np.ones((3, n_pts)) * baseline_power
     
-    # Apply ERD Drop
-    mask_erd = (time_vec >= 0.0) & (time_vec < 3.0)
-    dummy_power[:, mask_erd] = 5.0
+    # Mask for Task Period (0s to 3s) and Post-Task (3s to 5s)
+    mask_task = (time_vec >= 0.0) & (time_vec < 3.0)
+    mask_post = (time_vec >= 3.0) & (time_vec < 5.0)
     
-    # Apply ERS Rise
-    mask_ers = (time_vec >= 3.0)
-    dummy_power[:, mask_ers] = 15.0
+    # Channel 0 (C3): Simulate ERD (Left Hemi activation for Right Hand)
+    # Drop to 50% power
+    dummy_power[0, mask_task] = 5.0 
+    # Rebound ERS
+    dummy_power[0, mask_post] = 15.0 
     
-    # Add a little noise to make it realistic
-    noise = np.random.randn(1, n_pts) * 0.1
+    # Channel 1 (Cz): Constant (No significant change)
+    # Stays around 10.0
+    
+    # Channel 2 (C4): Simulate ERS (Right Hemi inhibition/idling)
+    # Increase to 150% power
+    dummy_power[2, mask_task] = 15.0 
+    
+    # Add noise
+    noise = np.random.randn(3, n_pts) * 0.5
     dummy_power += noise
     
     print("\n[TEST] Calculating ERD/ERS Percentage (Ref: -2.0 to -0.5s)...")
@@ -148,37 +158,40 @@ if __name__ == "__main__":
     try:
         erd_result, t_axis = calculate_erd_percent(dummy_power, fs, tmin, tmax, ref_interval=(-2.0, -0.5))
         
-        # 3. Plotting
-        plt.figure(figsize=(10, 6))
+        # 3. Numeric Validation
+        print("\n--- NUMERIC RESULTS (Average during Task 0-3s) ---")
+        ch_names = ['C3 (Simulated ERD)', 'Cz (No Change)', 'C4 (Simulated ERS)']
         
-        # Subplot 1: Absolute Power
-        plt.subplot(2, 1, 1)
-        plt.plot(t_axis, dummy_power[0, :], 'k', label='Smoothed Power')
-        plt.title("Input: Absolute Power")
-        plt.axvspan(-2, -0.5, color='green', alpha=0.1, label='Reference Period')
-        plt.ylabel(r"Power ($\mu V^2$)")
-        plt.legend(loc='upper left')
-        plt.grid(True)
+        task_indices = (t_axis >= 0.0) & (t_axis < 3.0)
         
-        # Subplot 2: Relative Percentage
-        plt.subplot(2, 1, 2)
-        plt.plot(t_axis, erd_result[0, :], 'b', linewidth=2, label='ERD/ERS %')
-        plt.title("Output: Relative Change (%)")
+        for i in range(3):
+            avg_erd = np.mean(erd_result[i, task_indices])
+            print(f"{ch_names[i]}: {avg_erd:.2f}%")
+            
+        # 4. Plotting
+        fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
         
-        # Reference Lines
-        plt.axhline(0, color='k', linewidth=1)
-        plt.axhline(-50, color='r', linestyle='--', label='Expected ERD (-50%)')
-        plt.axhline(50, color='g', linestyle='--', label='Expected ERS (+50%)')
-        
-        plt.ylabel("Change (%)")
-        plt.xlabel("Time relative to Cue (s)")
-        plt.legend(loc='upper left')
-        plt.grid(True)
-        
+        for i, ax in enumerate(axes):
+            ax.plot(t_axis, erd_result[i, :], color='blue', linewidth=2, label='ERD/ERS %')
+            ax.axhline(0, color='k', linewidth=1.5)
+            ax.axvline(0, color='gray', linestyle=':', label='Cue Onset')
+            
+            # Highlight ERD (Negative) vs ERS (Positive) areas
+            ax.fill_between(t_axis, erd_result[i, :], 0, where=(erd_result[i, :] < 0), 
+                            color='blue', alpha=0.3, label='ERD (Activation)')
+            ax.fill_between(t_axis, erd_result[i, :], 0, where=(erd_result[i, :] > 0), 
+                            color='red', alpha=0.3, label='ERS (Idling)')
+            
+            ax.set_title(f"Channel: {ch_names[i]}")
+            ax.set_ylabel("Change (%)")
+            ax.legend(loc='upper right', fontsize='small')
+            ax.grid(True)
+            
+        axes[-1].set_xlabel("Time relative to Cue (s)")
         plt.tight_layout()
         plt.show()
         
-        print("\n[TEST] ERD Calculation Module Verification Passed.")
+        print("\n[TEST] Multi-Channel ERD Calculation Passed.")
         
     except Exception as e:
         print(f"\n[TEST] Failed: {e}")
