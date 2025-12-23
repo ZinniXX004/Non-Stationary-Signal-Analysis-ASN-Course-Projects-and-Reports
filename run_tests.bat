@@ -53,12 +53,34 @@ if not exist "eeg_core.cpp" (
     REM Check if DLL exists
     if not exist "eeg_processing.dll" (
         echo     [WARNING] eeg_processing.dll not compiled yet
-        echo              >> Run: g++ -O3 -shared -static -o eeg_processing.dll eeg_core.cpp
+        echo              Run: g++ -O3 -shared -static -o eeg_processing.dll eeg_core.cpp
     ) else (
         echo     [PASS] eeg_processing.dll exists
         set /a PASS+=1
     )
 )
+echo.
+
+REM Check for C++ includes in eeg_core.cpp
+echo ============================================================================
+echo                  C++ SCRIPT DEPENDENCIES CHECK
+echo ============================================================================
+echo.
+
+echo Analyzing: eeg_core.cpp
+python -c "
+import re
+try:
+    with open('eeg_core.cpp', 'r', encoding='utf-8', errors='ignore') as f:
+        content = f.read()
+    includes = re.findall(r'#include\s*[<\"]([^>\"]+)[>\"]', content)
+    if includes:
+        print('  Required headers: ' + ', '.join(includes))
+    else:
+        print('  No includes found')
+except Exception as e:
+    print(f'  Error analyzing: {e}')
+" 2>nul
 echo.
 
 REM Check Python Package Dependencies
@@ -75,7 +97,9 @@ for %%p in (%PYTHON_PACKAGES%) do (
         echo [FAIL] Package not installed: %%p
         set /a FAIL+=1
     ) else (
-        echo [PASS] Package installed: %%p
+        for /f "tokens=*" %%v in ('python -c "import %%p; print(%%p.__version__ if hasattr(%%p, '__version__') else 'N/A')" 2^>nul') do (
+            echo [PASS] Package installed: %%p ^(Version: %%v^)
+        )
         set /a PASS+=1
     )
 )
@@ -87,7 +111,7 @@ echo                       PYTHON SCRIPT CHECK
 echo ============================================================================
 echo.
 
-set PYTHON_SCRIPTS=main.py GUI.py load_data_eeg_mne.py filtering_BPF_EEG.py CWT.py squaring_EEG.py average_all_EEG_trials.py moving_average_EEG.py percentage_ERD.py percentage_ERD_ERS.py csp_scratch.py ml_analysis.py logger_util.py
+set PYTHON_SCRIPTS=main.py GUI.py load_data_eeg_mne.py filtering_BPF_EEG.py CWT.py squaring_EEG.py average_all_EEG_trials.py moving_average_EEG.py percentage_ERD_ERS.py csp_scratch.py ml_analysis.py logger_util.py
 
 for %%s in (%PYTHON_SCRIPTS%) do (
     if not exist "%%s" (
@@ -99,9 +123,44 @@ for %%s in (%PYTHON_SCRIPTS%) do (
             echo [FAIL] Script has syntax errors: %%s
             set /a FAIL+=1
         ) else (
-            echo [PASS] Script OK: %%s
+            echo [PASS] Script syntax OK: %%s
             set /a PASS+=1
         )
+    )
+)
+echo.
+
+REM Check Python Script Dependencies
+echo ============================================================================
+echo              PYTHON SCRIPT DEPENDENCIES & IMPORT CHECK
+echo ============================================================================
+echo.
+
+for %%s in (%PYTHON_SCRIPTS%) do (
+    if exist "%%s" (
+        echo Analyzing: %%s
+        python -c "
+import ast
+import sys
+try:
+    with open('%%s', 'r', encoding='utf-8', errors='ignore') as f:
+        tree = ast.parse(f.read())
+    imports = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.add(alias.name.split('.')[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                imports.add(node.module.split('.')[0])
+    if imports:
+        print('  Required imports: ' + ', '.join(sorted(imports)))
+    else:
+        print('  No external imports found')
+except Exception as e:
+    print(f'  Error analyzing: {e}', file=sys.stderr)
+" 2>nul
+        echo.
     )
 )
 echo.
