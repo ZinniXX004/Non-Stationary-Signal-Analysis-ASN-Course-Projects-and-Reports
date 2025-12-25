@@ -70,7 +70,7 @@ class ManualWindow:
             return np.ones(N)
 
 class ManualDWT:
-    # Uses the Mallat Algorithm (Filter Bank) with Daubechies 4 (db4) coefficients.
+    # Uses the Mallat Algorithm (Filter Bank) with Daubechies 4 (db4) coefficients
     def __init__(self):
         # Decomposition Low-Pass Coefficients (L_D) for db4
         self.ld_coeffs = np.array([
@@ -176,8 +176,6 @@ def soft_thresholding(x, threshold):
 
 def denoise_dwt(segments, window_type='Rectangular'):
     """
-    Main function for DWT Denoisings
-    
     Steps:
     1. Apply selected Window Function
     2. Decompose using DWT (db4, level 8)

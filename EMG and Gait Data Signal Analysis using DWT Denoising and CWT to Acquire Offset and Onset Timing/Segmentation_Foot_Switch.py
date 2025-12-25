@@ -67,7 +67,6 @@ def segment_data(data_dict):
     
     segments = []
     
-    # LOGIC CHANGE: Iterate through Toe Offs instead of Heel Strikes
     # Cycle = Toe Off [i] -> Toe Off [i+1]
     # This captures Swing Phase -> Stance Phase
     for i in range(len(toe_offs) - 1):
