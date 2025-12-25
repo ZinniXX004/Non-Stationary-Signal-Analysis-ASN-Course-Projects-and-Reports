@@ -1235,18 +1235,36 @@ class EEGAnalysisWindow(QMainWindow):
         except Exception as e:
             self.log(f"ERD ERROR: {e}")
 
-    # TAB 8: FEATURE EXTRACTION (Scrollable with 6 Plots)
+   # =========================================================================
+    # TAB 8: FEATURE EXTRACTION (MODIFIED FOR C3, Cz, C4)
+    # =========================================================================
     def init_tab_features(self):
-        tab = QWidget(); l = QVBoxLayout()
+        """
+        Initializes Tab 8 layout.
+        """
+        tab = QWidget()
+        l = QVBoxLayout()
+        
+        # Control Button
         btn = QPushButton("[ EXTRACT FEATURES (FROM ALL TRAINING FILES) ]")
         btn.clicked.connect(self.run_features)
         l.addWidget(btn)
         
+        # Scrollable Layout containing CSP Scatter and 5 Temporal Boxplots
         self.scroll_feats = ScrollableFeatureLayout()
         l.addWidget(self.scroll_feats)
-        tab.setLayout(l); self.tabs.addTab(tab, "8. FEATURES")
+        
+        tab.setLayout(l)
+        self.tabs.addTab(tab, "8. FEATURES")
 
     def run_features(self):
+        """
+        Executes Feature Extraction:
+        1. Aggregates all Training Data.
+        2. Computes CSP (Spatial Features).
+        3. Computes Temporal Statistics (Mean, Var, Skew, Kurt) for C3, Cz, C4.
+        4. Visualizes results.
+        """
         if not self.datasets["Train"]:
             QMessageBox.warning(self, "Error", "No Training Files Loaded in Tab 1!")
             return
@@ -1256,12 +1274,13 @@ class EEGAnalysisWindow(QMainWindow):
             all_epochs = []
             all_labels = []
             
-            # Loop through all loaded training files and aggregate epochs
+            # 1. Loop through all loaded training files and aggregate epochs
             for d in self.datasets["Train"]:
-                raw = d["data_3ch"]
+                raw = d["data_3ch"] # Shape: (3, n_samples) -> (C3, Cz, C4)
                 ev = d["events"]
                 fs = d["fs"]
                 
+                # Extract epochs (0.5s to 3.5s post-cue)
                 ep, lbl = self.ml_pipeline.prepare_data(raw, ev, fs, tmin=0.5, tmax=3.5)
                 all_epochs.append(ep)
                 all_labels.append(lbl)
@@ -1271,62 +1290,96 @@ class EEGAnalysisWindow(QMainWindow):
             
             self.log(f"TOTAL TRAINING SAMPLES: {X_train_full.shape[0]}")
             
-            # Train CSP
-            self.ml_pipeline.csp = csp_scratch.CSP_Scratch(2)
+            # 2. Train CSP (Spatial Features)
+            # Note: CSP handles the 3 channels internally to find optimal filters
+            self.ml_pipeline.csp = csp_scratch.CSP_Scratch(n_components=2)
             self.ml_pipeline.csp.fit(X_train_full, y_train_full)
             csp_feats = self.ml_pipeline.csp.transform(X_train_full)
             
-            # Temporal Features
+            # 3. Extract Temporal Features (Statistical)
+            # Returns flattened array: [C3_metrics..., Cz_metrics..., C4_metrics...]
             temp_ext = csp_scratch.TemporalFeatureExtractor()
             temp_feats = temp_ext.transform(X_train_full)
             
-            # Store for ML
+            # Store for Machine Learning Tab usage
             self.ml_epochs = X_train_full
             self.ml_labels = y_train_full
             
             # --- VISUALIZATION ---
-            # 1. CSP Scatter
-            p_csp = self.scroll_feats.get_csp_plot(); p_csp.clear_plot(); ax = p_csp.get_axes()
-            ax.scatter(csp_feats[y_train_full==0, 0], csp_feats[y_train_full==0, 1], color='cyan', label='Left')
-            ax.scatter(csp_feats[y_train_full==1, 0], csp_feats[y_train_full==1, 1], color='magenta', label='Right')
-            p_csp.style_axes(ax, title="CSP FEATURE SPACE (CLUSTERING)", xlabel="Log-Var (Comp 1)", ylabel="Log-Var (Comp 2)")
-            ax.legend(); p_csp.draw()
             
-            # 2. Temporal Boxplots (5 Metrics)
+            # A. CSP Scatter Plot
+            p_csp = self.scroll_feats.get_csp_plot()
+            p_csp.clear_plot()
+            ax = p_csp.get_axes()
+            
+            # Plot Class 0 (Left) vs Class 1 (Right)
+            ax.scatter(csp_feats[y_train_full==0, 0], csp_feats[y_train_full==0, 1], 
+                       color='cyan', label='Left Hand', alpha=0.7, edgecolors='white', s=40)
+            ax.scatter(csp_feats[y_train_full==1, 0], csp_feats[y_train_full==1, 1], 
+                       color='magenta', label='Right Hand', alpha=0.7, edgecolors='white', s=40)
+            
+            p_csp.style_axes(ax, title="CSP FEATURE SPACE (CLUSTERING)", 
+                             xlabel="Log-Var (Component 1)", ylabel="Log-Var (Component 2)")
+            ax.legend(loc='upper right')
+            p_csp.draw()
+            
+            # B. Temporal Boxplots (5 Metrics) for ALL Channels (C3, Cz, C4)
             p_temps = self.scroll_feats.get_temporal_plots()
             metrics = ["Mean", "Variance", "StdDev", "Skewness", "Kurtosis"]
             
-            # Visualize features for all channels combined or just one? Let's show C3 vs C4 comparison for each metric
-            # Or better, show C3 for Left vs Right to see if there is difference.
+            # Iterate through each metric (Mean, Var, etc.)
             for i, p in enumerate(p_temps):
-                p.clear_plot(); ax = p.get_axes()
-                # Col index: (Channel * 5) + Metric
-                # Let's compare C3 (idx 0) and C4 (idx 2)
-                col_c3 = (0 * 5) + i 
-                col_c4 = (2 * 5) + i
+                p.clear_plot()
+                ax = p.get_axes()
                 
-                d_c3_L = temp_feats[y_train_full==0, col_c3]
-                d_c3_R = temp_feats[y_train_full==1, col_c3]
-                d_c4_L = temp_feats[y_train_full==0, col_c4]
-                d_c4_R = temp_feats[y_train_full==1, col_c4]
+                # Calculate column indices in the flattened feature matrix
+                # Structure: [Ch0_Metrics(0-4), Ch1_Metrics(5-9), Ch2_Metrics(10-14)]
+                idx_c3 = (0 * 5) + i 
+                idx_cz = (1 * 5) + i 
+                idx_c4 = (2 * 5) + i
                 
-                # Matplotlib 3.9+ 'tick_labels' compatibility
-                box = ax.boxplot([d_c3_L, d_c3_R, d_c4_L, d_c4_R], 
-                                 tick_labels=['L(C3)', 'R(C3)', 'L(C4)', 'R(C4)'], patch_artist=True,
-                                 medianprops=dict(color="white"), whiskerprops=dict(color="white"), capprops=dict(color="white"))
+                # Extract Data for Boxplots
+                # Format: d_{channel}_{Label}
+                d_c3_L = temp_feats[y_train_full==0, idx_c3] # C3 Left
+                d_c3_R = temp_feats[y_train_full==1, idx_c3] # C3 Right
                 
-                colors = ['cyan', 'magenta', 'cyan', 'magenta']
+                d_cz_L = temp_feats[y_train_full==0, idx_cz] # Cz Left
+                d_cz_R = temp_feats[y_train_full==1, idx_cz] # Cz Right
+                
+                d_c4_L = temp_feats[y_train_full==0, idx_c4] # C4 Left
+                d_c4_R = temp_feats[y_train_full==1, idx_c4] # C4 Right
+                
+                data_to_plot = [d_c3_L, d_c3_R, d_cz_L, d_cz_R, d_c4_L, d_c4_R]
+                tick_labels = ['L(C3)', 'R(C3)', 'L(Cz)', 'R(Cz)', 'L(C4)', 'R(C4)']
+                
+                # Create Boxplot
+                box = ax.boxplot(data_to_plot, 
+                                 tick_labels=tick_labels, 
+                                 patch_artist=True,
+                                 medianprops=dict(color="white"), 
+                                 whiskerprops=dict(color="white"), 
+                                 capprops=dict(color="white"),
+                                 flierprops=dict(marker='o', markerfacecolor='white', markersize=3))
+                
+                # Color Coding: Cyan (Left), Magenta (Right)
+                colors = ['cyan', 'magenta', 'cyan', 'magenta', 'cyan', 'magenta']
                 for patch, color in zip(box['boxes'], colors):
                     patch.set_facecolor(color)
-                    patch.set_alpha(0.7)
+                    patch.set_alpha(0.6)
                 
-                p.style_axes(ax, title=f"METRIC DISTRIBUTION: {metrics[i]}", xlabel="Class (Channel)", ylabel="Value")
+                p.style_axes(ax, title=f"METRIC DISTRIBUTION: {metrics[i].upper()}", 
+                             xlabel="Class (Channel)", ylabel="Feature Value")
+                
+                # Add a grid for easier reading
+                ax.grid(True, axis='y', color='#333', linestyle='--')
                 p.draw()
                 
-            self.log("FEATURES EXTRACTED & VISUALIZED.")
+            self.log("FEATURES EXTRACTED & VISUALIZED (C3, Cz, C4).")
             
         except Exception as e:
             self.log(f"FEATURE ERROR: {e}")
+            import traceback
+            traceback.print_exc()
 
     # TAB 9: MACHINE LEARNING & INFERENCE
     def init_tab_ml(self):

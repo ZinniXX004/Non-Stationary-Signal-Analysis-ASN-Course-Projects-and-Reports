@@ -239,7 +239,7 @@ class ML_Pipeline:
             'Naive Bayes': GaussianNB(),
             'Kernel SVM (RBF)': SVC(kernel='rbf', C=1.0, gamma='scale'),
             'RF (Tuned)': RandomForestClassifier(n_estimators=200, criterion='entropy', random_state=42),
-            'MLP (Neural Network)': MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=3000, 
+            'MLP (Neural Network)': MLPClassifier(hidden_layer_sizes=(64, 64), max_iter=5000, 
                                                   activation='relu', solver='adam', random_state=42)
         }
         

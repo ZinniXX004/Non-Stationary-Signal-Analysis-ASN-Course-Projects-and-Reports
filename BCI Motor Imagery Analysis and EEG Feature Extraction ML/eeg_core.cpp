@@ -28,9 +28,7 @@
 // Constants
 const double PI = 3.14159265358979323846;
 
-// =================================================================
 // 1. IIR FILTER IMPLEMENTATION (Standard Difference Equation)
-// =================================================================
 DLLEXPORT void apply_filter(double* input, int length, 
                             double* b, int b_len, 
                             double* a, int a_len, 
@@ -66,9 +64,7 @@ DLLEXPORT void apply_filter(double* input, int length,
     }
 }
 
-// =================================================================
 // 2. MOVING AVERAGE (Smoothing)
-// =================================================================
 DLLEXPORT void moving_average(double* input, int length, int window_size, double* output) {
     if (window_size <= 0) return;
 
@@ -91,9 +87,7 @@ DLLEXPORT void moving_average(double* input, int length, int window_size, double
     }
 }
 
-// =================================================================
 // 3. CONTINUOUS WAVELET TRANSFORM (Morlet)
-// =================================================================
 DLLEXPORT void compute_cwt_magnitude(double* input, int length, 
                                      double* scales, int num_scales, 
                                      double fs, 
@@ -140,9 +134,7 @@ DLLEXPORT void compute_cwt_magnitude(double* input, int length,
     }
 }
 
-// =================================================================
 // 4. CONTINUOUS WAVELET TRANSFORM (Mexican Hat / Ricker)
-// =================================================================
 /*
  * Computes CWT using the Real-valued Mexican Hat wavelet.
  * Formula: psi(t) = (2 / (sqrt(3*sigma) * pi^0.25)) * (1 - t^2/sigma^2) * exp(-t^2 / (2*sigma^2))
