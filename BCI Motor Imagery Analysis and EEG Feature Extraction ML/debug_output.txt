@@ -1,0 +1,19 @@
+==========================================================
+   EEG ANALYSIS SYSTEM - DEBUG LOG
+   Session Started: 2025-12-26 13:35:42
+==========================================================
+
+[SYSTEM] Debug Logger Initialized.
+[SYSTEM] Log file location: D:\Sem 5\ASN (A)\5023231017_Jeremia Christ Immanuel Manalu_Assignment ASN_EEG Analysis_Motor Imagery\BCI Motor Imagery Analysis and EEG Feature Extraction ML\debug_output.txt
+[SYSTEM] Global Exception Hook is active.
+>> Performing System Pre-flight Checks...
+[CHECK] Core Library 'eeg_processing.dll' found.
+>> SYSTEM BOOT SEQUENCE INITIATED...
+>> Loading Python Libraries (PyQt6, NumPy, Scikit-Learn, Matplotlib)...
+[INFO] C++ Library loaded successfully: eeg_processing.dll
+[INFO] C++ Library loaded successfully: eeg_processing.dll
+[INFO] C++ Library loaded successfully: eeg_processing.dll
+[CHECK] GUI Module imported successfully.
+>> Initializing PyQt6 Application...
+>> Launching Main Window...
+>> GUI LAUNCH SUCCESSFUL. SYSTEM READY.
