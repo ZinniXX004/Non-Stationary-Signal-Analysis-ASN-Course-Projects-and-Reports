@@ -1,5 +1,5 @@
 """
-moving_average_EEG.py (REVISED v3.0)
+moving_average_EEG.py
 
 Purpose:
     - Apply a Moving Average (Sliding Window) filter to smooth the Power signal.

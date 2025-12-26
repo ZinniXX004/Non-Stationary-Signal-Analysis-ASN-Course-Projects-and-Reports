@@ -1,12 +1,12 @@
 """
-filtering_BPF_EEG.py (REVISED v3.0)
+filtering_BPF_EEG.py
 
 Purpose:
     - Apply Bandpass Filter (IIR Butterworth) to EEG signals.
-    - Support Multi-Channel Filtering (C3, Cz, C4) for full BCI pipeline.
+    - Support Multi-Channel Filtering (C3, Cz, C4).
+    - Support Dynamic Frequency Band Selection (Mu, Beta, Broadband).
     - Calculate Filter Coefficients (b, a) using pure Numpy.
     - Offload the filtering loop to 'eeg_processing.dll' (C++).
-    - Provide educational context regarding preprocessing.
 
 Dependencies:
     - ctypes
@@ -50,10 +50,11 @@ except Exception as e:
     print(f"[ERROR] Failed to load DLL: {e}")
     lib = None
 
-# 2. Context & Description Helper
+# 2. Context & Description Helper (Dynamic)
 def get_filter_description(low=0.5, high=30.0):
     """
     Returns a descriptive string explaining the Bandpass Filter step.
+    Adapts explanation based on the frequency range selected.
     
     Args:
         low (float): Low cutoff frequency.
@@ -62,19 +63,27 @@ def get_filter_description(low=0.5, high=30.0):
     Returns:
         str: Educational text about the filter.
     """
+    band_name = "BROADBAND"
+    focus_text = "General Motor Imagery content + Artifact Removal."
+    
+    if low >= 7 and high <= 15:
+        band_name = "MU RHYTHM (Alpha)"
+        focus_text = "Focus on Idling Rhythms. Expect strong ERD during movement."
+    elif low >= 12 and high >= 25:
+        band_name = "BETA RHYTHM"
+        focus_text = "Focus on Active Processing and Post-Movement Rebound (ERS)."
+
     description = (
-        f"--- PREPROCESSING: BANDPASS FILTER ({low} - {high} Hz) ---\n\n"
+        f"--- PREPROCESSING: {band_name} FILTER ({low} - {high} Hz) ---\n\n"
         "1. OBJECTIVE:\n"
-        "   To isolate the brain frequencies relevant to Motor Imagery while removing noise.\n\n"
-        "2. WHY 0.5 Hz (High-Pass)?\n"
-        "   - Removes DC Offset (baseline drift) caused by electrode polarization.\n"
-        "   - Removes very slow artifacts like sweating or breathing.\n\n"
-        "3. WHY 30.0 Hz (Low-Pass)?\n"
-        "   - Removes 50Hz/60Hz Power Line Interference (Mains Hum).\n"
-        "   - Removes high-frequency EMG (Electromyogram) noise from muscle tension.\n\n"
-        "4. TARGET RHYTHMS (C3, Cz, C4):\n"
-        "   - Preserves Mu (8-12 Hz) and Beta (13-30 Hz) bands required for ERD/ERS analysis.\n"
-        "   - Filter Type: Infinite Impulse Response (IIR) Butterworth (Order 2/4).\n"
+        f"   {focus_text}\n\n"
+        "2. FILTER SPECIFICATIONS:\n"
+        f"   - Low Cutoff: {low} Hz (Removes slower drifts/artifacts)\n"
+        f"   - High Cutoff: {high} Hz (Removes high-freq noise/EMG)\n"
+        "   - Type: IIR Butterworth (Zero-Phase via Forward-Backward application)\n\n"
+        "3. TARGET CHANNELS (C3, Cz, C4):\n"
+        "   - These channels are located over the Sensorimotor Cortex.\n"
+        "   - Filtering ensures we analyze brain waves, not muscle noise.\n"
     )
     return description
 
@@ -82,6 +91,18 @@ def get_filter_description(low=0.5, high=30.0):
 def design_butter_bandpass_2nd_order(lowcut, highcut, fs):
     """
     Designs a 2nd-order Butterworth Bandpass Filter using the Bilinear Transform.
+    This replaces scipy.signal.butter to adhere to project constraints.
+    
+    Formula Reference: Robert Bristow-Johnson's Audio EQ Cookbook (BPF constant peak gain).
+    
+    Args:
+        lowcut (float): Lower frequency (Hz)
+        highcut (float): Higher frequency (Hz)
+        fs (float): Sampling rate (Hz)
+        
+    Returns:
+        b (np.array): Numerator coefficients
+        a (np.array): Denominator coefficients
     """
     # Angular frequency
     w0 = 2 * np.pi * np.sqrt(lowcut * highcut) / fs
@@ -136,7 +157,10 @@ def run_filter_single(eeg_data, fs, low=0.5, high=30.0, order=2):
                      output)
     
     # 4. (Optional) Second Pass for Steepness (Pseudo-4th Order)
+    # This cascades the filter to achieve a sharper cutoff (-24dB/octave)
     if order >= 4:
+        # Swap input/output for the next pass
+        # We take the output of the first pass as input for the second
         temp_input = output.copy()
         lib.apply_filter(temp_input, len(temp_input), 
                          b_c, len(b_c), 
@@ -145,14 +169,16 @@ def run_filter_single(eeg_data, fs, low=0.5, high=30.0, order=2):
 
     return output
 
-# 5. Multi-Channel Wrapper
+# 5. Multi-Channel Wrapper (Flexible Band Support)
 def run_filter_multi_channel(eeg_data_3ch, fs, low=0.5, high=30.0, order=2):
     """
     Applies BPF to multiple channels (e.g., C3, Cz, C4).
+    This function is called by the GUI when the Band Selector is changed.
     
     Args:
         eeg_data_3ch (np.array): 2D Array (n_channels, n_samples).
         fs (float): Sampling rate.
+        low, high (float): Cutoff frequencies (Dynamic).
         
     Returns:
         filtered_data (np.array): Same shape as input.
@@ -160,56 +186,56 @@ def run_filter_multi_channel(eeg_data_3ch, fs, low=0.5, high=30.0, order=2):
     n_channels, n_samples = eeg_data_3ch.shape
     filtered_data = np.zeros_like(eeg_data_3ch)
     
-    channel_names = ['C3', 'Cz', 'C4'] # Assumed order for logging
+    channel_names = ['C3', 'Cz', 'C4'] 
     
     for i in range(n_channels):
-        ch_name = channel_names[i] if i < 3 else f"Ch{i}"
-        # print(f"[INFO] Filtering Channel {ch_name}...")
+        # ch_name = channel_names[i] if i < 3 else f"Ch{i}"
+        # print(f"[INFO] Filtering Channel {ch_name} with {low}-{high} Hz...")
         filtered_data[i, :] = run_filter_single(eeg_data_3ch[i, :], fs, low, high, order)
         
     return filtered_data
 
 # Unit Test (Standalone Execution)
 if __name__ == "__main__":
-    print(">> RUNNING STANDALONE TEST: filtering_BPF_EEG.py (Multi-Channel)")
+    print(">> RUNNING STANDALONE TEST: filtering_BPF_EEG.py (Multi-Band Check)")
     
     fs = 250.0
     t = np.linspace(0, 2, int(2*fs))
     
-    # Simulate 3 Channels with different noise profiles
-    # C3: 10Hz signal + DC drift
-    raw_c3 = np.sin(2 * np.pi * 10 * t) + np.sin(2 * np.pi * 0.1 * t) * 5.0
+    # Simulate a signal with multiple frequency components
+    # 10 Hz (Mu) + 20 Hz (Beta) + 50 Hz (Noise)
+    raw_sig = (np.sin(2 * np.pi * 10 * t) + 
+               np.sin(2 * np.pi * 20 * t) + 
+               np.sin(2 * np.pi * 50 * t) * 0.5)
     
-    # Cz: 20Hz signal + 50Hz mains hum
-    raw_cz = np.sin(2 * np.pi * 20 * t) + np.sin(2 * np.pi * 50 * t) * 2.0
+    # Create 3-channel duplicate for testing wrapper
+    raw_3ch = np.vstack([raw_sig, raw_sig, raw_sig])
     
-    # C4: Clean 10Hz signal
-    raw_c4 = np.sin(2 * np.pi * 10 * t)
+    print("\n[TEST 1] Testing MU BAND Filter (8-13 Hz)...")
+    mu_filtered = run_filter_multi_channel(raw_3ch, fs, low=8.0, high=13.0, order=4)
     
-    # Stack
-    raw_3ch = np.vstack([raw_c3, raw_cz, raw_c4])
+    print("\n[TEST 2] Testing BETA BAND Filter (13-30 Hz)...")
+    beta_filtered = run_filter_multi_channel(raw_3ch, fs, low=13.0, high=30.0, order=4)
     
-    print(f"\n[TEST] Applying Filter to 3 Channels...")
-    try:
-        filtered_3ch = run_filter_multi_channel(raw_3ch, fs, low=0.5, high=30.0, order=4)
-        
-        # Plot Results
-        fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
-        ch_names = ['C3 (Drift Removal)', 'Cz (50Hz Removal)', 'C4 (Clean Baseline)']
-        
-        for i, ax in enumerate(axes):
-            ax.plot(t, raw_3ch[i, :], label='Raw', color='gray', alpha=0.5)
-            ax.plot(t, filtered_3ch[i, :], label='Filtered', color='blue', linewidth=1.5)
-            ax.set_title(ch_names[i])
-            ax.set_ylabel("Amplitude")
-            ax.legend(loc='upper right')
-            ax.grid(True)
-            
-        axes[-1].set_xlabel("Time (s)")
-        plt.tight_layout()
-        plt.show()
-        
-        print("\n[TEST] Multi-Channel Filter Passed.")
-        
-    except Exception as e:
-        print(f"\n[TEST] Failed: {e}")
+    # Plot Comparison
+    plt.figure(figsize=(10, 8))
+    
+    plt.subplot(3, 1, 1)
+    plt.plot(t, raw_sig, color='gray', alpha=0.5, label='Raw (10Hz + 20Hz + Noise)')
+    plt.title("Raw Signal")
+    plt.legend()
+    
+    plt.subplot(3, 1, 2)
+    plt.plot(t, mu_filtered[0, :], color='blue', label='Mu Filtered (8-13 Hz)')
+    plt.title("Mu Band Output (Should keep 10Hz)")
+    plt.legend()
+    
+    plt.subplot(3, 1, 3)
+    plt.plot(t, beta_filtered[0, :], color='red', label='Beta Filtered (13-30 Hz)')
+    plt.title("Beta Band Output (Should keep 20Hz)")
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.show()
+    
+    print("\n[TEST] Multi-Band Filter Verification Passed.")

@@ -1,6 +1,6 @@
 ==========================================================
    EEG ANALYSIS SYSTEM - DEBUG LOG
-   Session Started: 2025-12-26 13:35:42
+   Session Started: 2025-12-27 03:37:40
 ==========================================================
 
 [SYSTEM] Debug Logger Initialized.
@@ -17,3 +17,72 @@
 >> Initializing PyQt6 Application...
 >> Launching Main Window...
 >> GUI LAUNCH SUCCESSFUL. SYSTEM READY.
+[INFO] Loading File: B0101T.gdf
+[INFO] Applied Event Map for B0101T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770}
+[INFO] Loaded B0101T.gdf | Type: Screening (No Feedback) | Trials: 120
+[INFO] Loading File: B0103T.gdf
+[INFO] Applied Event Map for B0103T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770, '781': 781}
+[INFO] Loaded B0103T.gdf | Type: Smiley Feedback | Trials: 160
+[INFO] Loading File: B0201T.gdf
+[INFO] Applied Event Map for B0201T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770}
+[INFO] Loaded B0201T.gdf | Type: Screening (No Feedback) | Trials: 120
+[INFO] Loading File: B0203T.gdf
+[INFO] Applied Event Map for B0203T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770, '781': 781}
+[INFO] Loaded B0203T.gdf | Type: Smiley Feedback | Trials: 160
+[INFO] Loading File: B0302T.gdf
+[INFO] Applied Event Map for B0302T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770}
+[INFO] Loaded B0302T.gdf | Type: Screening (No Feedback) | Trials: 120
+[INFO] Loading File: B0402T.gdf
+[INFO] Applied Event Map for B0402T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770}
+[INFO] Loaded B0402T.gdf | Type: Screening (No Feedback) | Trials: 140
+[INFO] Loading File: B0403T.gdf
+[INFO] Applied Event Map for B0403T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770, '781': 781}
+[INFO] Loaded B0403T.gdf | Type: Smiley Feedback | Trials: 160
+[INFO] Loading File: B0501T.gdf
+[INFO] Applied Event Map for B0501T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770}
+[INFO] Loaded B0501T.gdf | Type: Screening (No Feedback) | Trials: 120
+[INFO] Loading File: B0601T.gdf
+[INFO] Applied Event Map for B0601T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770}
+[INFO] Loaded B0601T.gdf | Type: Screening (No Feedback) | Trials: 120
+[INFO] Loading File: B0702T.gdf
+[INFO] Applied Event Map for B0702T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770}
+[INFO] Loaded B0702T.gdf | Type: Screening (No Feedback) | Trials: 120
+[INFO] Loading File: B0801T.gdf
+[INFO] Applied Event Map for B0801T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770}
+[INFO] Loaded B0801T.gdf | Type: Screening (No Feedback) | Trials: 160
+[INFO] Loading File: B0901T.gdf
+[INFO] Applied Event Map for B0901T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770}
+[INFO] Loaded B0901T.gdf | Type: Screening (No Feedback) | Trials: 120
+[INFO] Loading File: B0902T.gdf
+[INFO] Applied Event Map for B0902T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770}
+[INFO] Loaded B0902T.gdf | Type: Screening (No Feedback) | Trials: 120
+[INFO] Loading File: B0903T.gdf
+[INFO] Applied Event Map for B0903T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770, '781': 781}
+[INFO] Loaded B0903T.gdf | Type: Smiley Feedback | Trials: 160
+[INFO] Loading File: B0402T.gdf
+[INFO] Applied Event Map for B0402T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770}
+[INFO] Loaded B0402T.gdf | Type: Screening (No Feedback) | Trials: 140
+[INFO] Loading File: B0104E.gdf
+[INFO] Applied Event Map for B0104E.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '781': 781, '783': 783}
+[INFO] Loaded B0104E.gdf | Type: Smiley Feedback | Trials: 0
+[ML] Using Explicit Split: Train=1900, Test=140
+[ML] Extracting features for Training...
+[ML] Extracting features for Testing...
+[ML INFO] Final Feature Matrix: (1900, 34)
+
+[ML RESULT] Best Model: Random Forest (100.00%)
+[ML] Using Explicit Split: Train=1900, Test=140
+[ML] Extracting features for Training...
+[ML] Extracting features for Testing...
+[ML INFO] Final Feature Matrix: (1900, 34)
+
+[ML RESULT] Best Model: Random Forest (100.00%)
+[INFO] Loading File: B0803T.gdf
+[INFO] Applied Event Map for B0803T.gdf: {'1023': 1023, '276': 276, '277': 277, '32766': 32766, '768': 768, '769': 769, '770': 770, '781': 781}
+[INFO] Loaded B0803T.gdf | Type: Smiley Feedback | Trials: 160
+[ML] Using Explicit Split: Train=1900, Test=160
+[ML] Extracting features for Training...
+[ML] Extracting features for Testing...
+[ML INFO] Final Feature Matrix: (1900, 34)
+
+[ML RESULT] Best Model: Decision Tree (85.00%)

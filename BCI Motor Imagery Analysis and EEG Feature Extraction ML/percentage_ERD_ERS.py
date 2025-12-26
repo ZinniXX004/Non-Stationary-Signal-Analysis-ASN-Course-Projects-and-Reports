@@ -1,5 +1,5 @@
 """
-percentage_ERD_ERS.py (REVISED v3.0)
+percentage_ERD_ERS.py
 
 Purpose:
     - Calculate the relative change in power compared to a baseline reference.

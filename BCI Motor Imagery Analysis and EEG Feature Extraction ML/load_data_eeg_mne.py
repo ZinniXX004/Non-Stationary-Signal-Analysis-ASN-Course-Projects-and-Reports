@@ -1,5 +1,5 @@
 """
-load_data_eeg_mne.py (REVISED v3.1)
+load_data_eeg_mne.py
 
 Purpose:
     - Load GDF files from BCI Competition IV Dataset 2b.

@@ -1,5 +1,5 @@
 """
-CWT.py (FIXED v3.1)
+CWT.py
 
 Purpose:
     - Perform Continuous Wavelet Transform (CWT) on EEG data.

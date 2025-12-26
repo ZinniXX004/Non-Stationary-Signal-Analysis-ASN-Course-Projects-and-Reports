@@ -1,5 +1,5 @@
 """
-average_all_EEG_trials.py (REVISED v3.0)
+average_all_EEG_trials.py
 
 Purpose:
     - Segment continuous squared EEG data into "Epochs" based on Event markers.

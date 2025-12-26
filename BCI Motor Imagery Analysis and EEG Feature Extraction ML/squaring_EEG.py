@@ -1,5 +1,5 @@
 """
-squaring_EEG.py (REVISED v3.0)
+squaring_EEG.py
 
 Purpose:
     - Convert EEG Amplitude to Instantaneous Power (Energy).
