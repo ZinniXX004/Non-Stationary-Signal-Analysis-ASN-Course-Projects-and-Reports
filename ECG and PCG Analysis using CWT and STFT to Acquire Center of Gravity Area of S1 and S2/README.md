@@ -55,8 +55,9 @@ $$CoG = \frac{\sum (t \cdot E(t))}{\sum E(t)}$$
 1.  **Clone the repository** and navigate to this folder.
 2.  **Download the dataset** from the link in Prerequisites and place the relevant `.wav` or `.mat` file in a `data/` subfolder (or update the path in the script).
 3.  **Run the analysis script:**
+
     ```bash
-    python analysis_script.py
+    python main.py
     ```
 4.  **View Output:** The script will generate plots comparing the STFT spectrogram and CWT scalogram, marking the detected S1 and S2 regions.
 

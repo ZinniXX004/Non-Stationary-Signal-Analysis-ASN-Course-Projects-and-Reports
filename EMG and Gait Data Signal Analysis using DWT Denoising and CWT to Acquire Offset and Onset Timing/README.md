@@ -53,7 +53,7 @@ The analysis focuses on determining the **Power Spectral Density (PSD)** to find
 3.  **Run the script:**
 
     ```bash
-    python emg_gait_analysis.py
+    python main.py
     ```
 5.  **Visualize:** The script outputs:
     * Raw vs. Denoised EMG plots.

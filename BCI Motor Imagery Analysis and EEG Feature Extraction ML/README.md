@@ -65,7 +65,7 @@ Since this project uses a C++ core, you must compile it first.
     The Python script will call the compiled C++ executable or use its output.
 
     ```bash
-    python main_bci_analysis.py
+    python main.py
     ```
 
 ## 📊 5. Evaluations
