@@ -1,13 +1,13 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-blue)
-![Language](https://img.shields.io/badge/Language-Python-green)
+![Language](https://img.shields.io/badge/Language-Python%20%7C%20Pascal-green)
 
 # Photoplethysmography (PPG) Analysis for Stress Detection
 
 ## 📝 1. Description
 This folder contains the Python implementation and final report for the combined **Assignment 4 & 5**: **"Photoplethysmography Signal Analysis for Stress Analysis Using DWT and EMD Algorithm"**.
 
-The primary objective is to extract physiological stress markers—specifically **Breath Rate**, **Vasomotor Activity**, and **Heart Rate Variability (HRV)**—from PPG signals collected from our own group members ("Group 5").
+The primary objective is to extract physiological stress markers, specifically **Breath Rate**, **Vasomotor Activity**, and **Heart Rate Variability (HRV)** from PPG signals collected from our own group members ("Group 5").
 
 This project compares two advanced signal processing techniques to handle the non-stationary nature of PPG data:
 1.  **Discrete Wavelet Transform (DWT):** Used for multi-resolution analysis to denoise and decompose signal components.
